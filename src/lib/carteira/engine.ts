@@ -232,6 +232,59 @@ export function editCarteira(c: Carteira, e: { dias?: number | null; deposito?: 
   }
 }
 
+export interface AreaSummary {
+  /** Posições abertas (já compradas). */
+  open: number;
+  /** Ordens esperando para comprar. */
+  pending: number;
+  /** Dinheiro reservado em ordens pendentes. */
+  reserved: number;
+  /** Custo das posições abertas. */
+  invested: number;
+  /** Valor de mercado das posições abertas. */
+  value: number;
+  /** Lucro/prejuízo das abertas (inclui dividendos recebidos). */
+  unrealized: number;
+  /** Lucro/prejuízo das encerradas. */
+  realized: number;
+  total: number;
+  /** Resultado sobre todo o dinheiro que já entrou em operações dessa área. */
+  ret: number;
+  wins: number;
+  losses: number;
+  /** Melhor e pior operação (encerrada ou aberta), em reais. */
+  best: { label: string; pnl: number } | null;
+  worst: { label: string; pnl: number } | null;
+}
+
+/** Resultado separado de uma área (Bolsa ou Polymarket). */
+export function areaSummary(c: Carteira, area: Position["area"]): AreaSummary {
+  const ps = c.positions.filter((p) => p.area === area && !(p.status === "fechada" && !p.entryPrice));
+  const open = ps.filter((p) => p.status === "aberta");
+  const closed = ps.filter((p) => p.status === "fechada");
+  const pending = ps.filter((p) => p.status === "pendente");
+  const invested = open.reduce((s, p) => s + p.amountBRL, 0);
+  const unrealized = open.reduce((s, p) => s + positionPnl(p), 0);
+  const realized = closed.reduce((s, p) => s + (p.pnlBRL ?? 0), 0);
+  const deployed = [...open, ...closed].reduce((s, p) => s + p.amountBRL, 0);
+  const ranked = [...open, ...closed].map((p) => ({ label: p.label, pnl: positionPnl(p) })).sort((a, b) => b.pnl - a.pnl);
+  return {
+    open: open.length,
+    pending: pending.length,
+    reserved: pending.reduce((s, p) => s + p.amountBRL, 0),
+    invested,
+    value: open.reduce((s, p) => s + positionValue(p), 0),
+    unrealized,
+    realized,
+    total: unrealized + realized,
+    ret: deployed ? (unrealized + realized) / deployed : 0,
+    wins: closed.filter((p) => (p.pnlBRL ?? 0) > 0).length,
+    losses: closed.filter((p) => (p.pnlBRL ?? 0) <= 0).length,
+    best: ranked[0] ?? null,
+    worst: ranked.length > 1 ? ranked[ranked.length - 1] : null,
+  };
+}
+
 /**
  * Divide o dinheiro em ações inteiras perseguindo os pesos-alvo.
  * Primeiro compra o que cabe em cada alvo; depois usa o troco comprando 1 ação por vez
@@ -262,8 +315,10 @@ export function allocateWholeShares(targets: { key: string; price: number; weigh
 export function recordEquity(c: Carteira, now = Date.now(), everyMs = 10 * 60_000) {
   const v = totalValue(c);
   const last = c.equity[c.equity.length - 1];
-  if (!last || now - last.t >= everyMs || last.base !== c.startCash) c.equity.push({ t: now, value: v, base: c.startCash });
-  else last.value = v;
+  const pnlBolsa = areaSummary(c, "bolsa").total;
+  const pnlPoly = areaSummary(c, "polymarket").total;
+  if (!last || now - last.t >= everyMs || last.base !== c.startCash) c.equity.push({ t: now, value: v, base: c.startCash, pnlBolsa, pnlPoly });
+  else Object.assign(last, { value: v, pnlBolsa, pnlPoly });
   if (c.equity.length > 3000) c.equity.splice(0, c.equity.length - 3000);
 }
 

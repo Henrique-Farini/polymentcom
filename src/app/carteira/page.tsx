@@ -3,12 +3,12 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, LiveBadge } from "@/components/ui";
-import { positionPnl, positionValue, totalValue } from "@/lib/carteira/engine";
+import { areaSummary, positionPnl, positionValue, totalValue, type AreaSummary } from "@/lib/carteira/engine";
 import { estimateTax, TAX_LABEL } from "@/lib/carteira/ir";
 import type { Carteira, CarteiraEvent, EquityPoint, Position } from "@/lib/carteira/types";
 import { B3_EQUIVALENT, DEFAULT_UNIVERSE, displaySymbol, execSymbol } from "@/lib/bolsa/universe";
 import { useConta } from "@/lib/client/conta";
-import { usePolling, useNow } from "@/lib/client/hooks";
+import { usePolling, useNow, useStored } from "@/lib/client/hooks";
 import type { PolyMarket } from "@/lib/polymarket/types";
 
 const brl = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -40,6 +40,7 @@ export default function CarteiraPage() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [panel, setPanel] = useState<null | "editar" | "recomecar">(null);
+  const [area, setArea] = useStored<AreaFilter>("radar:carteira:area", "todas");
   const now = useNow(30_000);
 
   async function act(body: Record<string, unknown>) {
@@ -109,6 +110,7 @@ export default function CarteiraPage() {
       ) : (
         <>
           <Resumo c={c} now={now} />
+          <AreaCards c={c} area={area} onArea={setArea} />
           <RaioX c={c} cdi={poll.data?.cdi ?? null} />
           <Card className="p-4">
             <h2 className="text-sm font-semibold">Patrimônio ao longo do teste</h2>
@@ -119,15 +121,17 @@ export default function CarteiraPage() {
 
           {c.cash >= 1 && <Investir c={c} busy={busy} onAuto={(o) => act({ acao: "auto", ...o })} onOrder={(o) => act({ acao: "ordem", ...o })} />}
 
+          <AreaTabs area={area} onArea={setArea} c={c} />
           <Posicoes
             c={c}
+            area={area}
             now={now}
             busy={busy}
             onClose={(id) => act({ acao: "fechar", id })}
             onEdit={(id, e) => act({ acao: "editar", id, ...e })}
           />
-          <Fechadas c={c} />
-          <Diario events={c.events} />
+          <Fechadas c={c} area={area} />
+          <Diario events={c.events} c={c} area={area} />
         </>
       )}
 
@@ -451,13 +455,13 @@ function Manual({ cash, busy, defaultDays, defaultStop, onOrder }: { cash: numbe
 
 type EditFn = (id: string, e: { valor?: number; stop?: number; dias?: number }) => Promise<boolean>;
 
-function Posicoes({ c, now, busy, onClose, onEdit }: { c: Carteira; now: number; busy: boolean; onClose: (id: string) => void; onEdit: EditFn }) {
-  const open = c.positions.filter((p) => p.status !== "fechada");
+function Posicoes({ c, area, now, busy, onClose, onEdit }: { c: Carteira; area: AreaFilter; now: number; busy: boolean; onClose: (id: string) => void; onEdit: EditFn }) {
+  const open = c.positions.filter((p) => p.status !== "fechada" && inArea(p, area));
   if (!open.length) return null;
   return (
     <Card className="overflow-hidden">
       <div className="border-b border-line px-4 py-3">
-        <h2 className="text-sm font-semibold">Posições abertas ({open.length})</h2>
+        <h2 className="text-sm font-semibold">Posições abertas{area !== "todas" ? ` · ${AREA_LABEL[area]}` : ""} ({open.length})</h2>
         <p className="text-xs text-muted">A barra mostra onde está o preço entre o stop (esquerda) e o ponto de compra.</p>
       </div>
       <div className="overflow-x-auto">
@@ -537,7 +541,7 @@ function PosRow({
           </div>
         )}
       </td>
-      <td className="num px-2 text-right text-xs text-muted">{p.exitAt ? left(p.exitAt - now) : `${p.holdDays} dias após comprar`}</td>
+      <td className="num px-2 text-right text-xs text-muted">{p.area === "polymarket" && p.sub.includes("até o resultado") ? "no resultado" : p.exitAt ? left(p.exitAt - now) : `${p.holdDays} dias após comprar`}</td>
       <td className="whitespace-nowrap px-3 text-right">
         <button type="button" onClick={() => setEditing((x) => !x)} className={`mr-1 rounded border px-2 py-0.5 text-xs ${editing ? "border-info text-info" : "border-line text-muted hover:border-info hover:text-info"}`}>
           Editar
@@ -644,14 +648,14 @@ function EditarTeste({ c, busy, onSave }: { c: Carteira; busy: boolean; onSave: 
 
 const REASON: Record<string, string> = { stop: "Stop", prazo: "Prazo", manual: "Manual", resolvido: "Resolvido" };
 
-function Fechadas({ c }: { c: Carteira }) {
-  const closed = c.positions.filter((p) => p.status === "fechada" && p.entryPrice).reverse();
+function Fechadas({ c, area }: { c: Carteira; area: AreaFilter }) {
+  const closed = c.positions.filter((p) => p.status === "fechada" && p.entryPrice && inArea(p, area)).reverse();
   if (!closed.length) return null;
   const wins = closed.filter((p) => (p.pnlBRL ?? 0) > 0).length;
   return (
     <Card className="overflow-hidden">
       <div className="border-b border-line px-4 py-3">
-        <h2 className="text-sm font-semibold">Operações encerradas ({closed.length})</h2>
+        <h2 className="text-sm font-semibold">Operações encerradas{area !== "todas" ? ` · ${AREA_LABEL[area]}` : ""} ({closed.length})</h2>
         <p className="text-xs text-muted">{wins} com lucro, {closed.length - wins} com prejuízo.</p>
       </div>
       <table className="w-full text-sm">
@@ -681,12 +685,15 @@ const KIND: Record<CarteiraEvent["kind"], { icon: string; cls: string }> = {
   info: { icon: "•", cls: "text-muted" },
 };
 
-function Diario({ events }: { events: CarteiraEvent[] }) {
+function Diario({ events, c, area }: { events: CarteiraEvent[]; c: Carteira; area: AreaFilter }) {
+  // Eventos de uma área: os que citam o nome de uma posição dela.
+  const labels = c.positions.filter((p) => inArea(p, area)).map((p) => p.label);
+  const shown = area === "todas" ? events : events.filter((e) => labels.some((l) => e.text.includes(l)) || (area === "polymarket" ? e.text.includes("Polymarket") : e.text.startsWith("Bolsa")));
   return (
     <Card className="p-4">
-      <h2 className="text-sm font-semibold">Diário da carteira</h2>
+      <h2 className="text-sm font-semibold">Diário{area !== "todas" ? ` · ${AREA_LABEL[area]}` : " da carteira"}</h2>
       <ul className="focus-group mt-2 max-h-72 space-y-1.5 overflow-y-auto text-sm">
-        {[...events].reverse().map((e, i) => (
+        {[...shown].reverse().map((e, i) => (
           <li key={`${e.t}-${i}`} className="focus-item flex gap-3">
             <span className="num w-28 shrink-0 text-xs text-muted">{dt(e.t)}</span>
             <span className={`w-3 shrink-0 ${KIND[e.kind].cls}`}>{KIND[e.kind].icon}</span>
@@ -816,6 +823,127 @@ function RaioX({ c, cdi }: { c: Carteira; cdi: { since: number; annual: number }
           </p>
         )}
       </Card>
+    </div>
+  );
+}
+
+/* ----------------------------- Bolsa × Polymarket ----------------------------- */
+
+type AreaFilter = "todas" | "bolsa" | "polymarket";
+const AREA_LABEL: Record<AreaFilter, string> = { todas: "Tudo", bolsa: "Bolsa", polymarket: "Polymarket" };
+const inArea = (p: Position, a: AreaFilter) => a === "todas" || p.area === a;
+
+/** Linha do resultado acumulado de uma área ao longo do teste (pontos gravados a partir de agora). */
+function AreaSpark({ points, color }: { points: number[]; color: string }) {
+  if (points.length < 2) return <div className="h-10 text-[10px] text-muted">o gráfico aparece com o tempo</div>;
+  const W = 220;
+  const H = 40;
+  const lo = Math.min(0, ...points);
+  const hi = Math.max(0, ...points);
+  const span = hi - lo || 1;
+  const y = (v: number) => H - 3 - ((v - lo) / span) * (H - 6);
+  const d = points.map((v, i) => `${i ? "L" : "M"}${((i / (points.length - 1)) * W).toFixed(1)},${y(v).toFixed(1)}`).join("");
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="h-10 w-full" aria-hidden>
+      <line x1={0} x2={W} y1={y(0)} y2={y(0)} stroke="#4b5a57" strokeDasharray="3 3" />
+      <path d={d} fill="none" stroke={color} strokeWidth={2} />
+    </svg>
+  );
+}
+
+function AreaCard({ title, icon, color, accent, s, spark, active, onClick, extra }: {
+  title: string;
+  icon: string;
+  color: string;
+  accent: string;
+  s: AreaSummary;
+  spark: number[];
+  active: boolean;
+  onClick: () => void;
+  extra?: React.ReactNode;
+}) {
+  const t = s.total;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`focus-item rounded-xl border bg-card p-4 text-left transition-colors ${active ? `${accent}` : "border-line hover:border-muted"}`}
+    >
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold">
+          <span style={{ color }}>{icon}</span> {title}
+        </h2>
+        <span className="text-[11px] text-muted">{active ? "filtrando abaixo" : "clique para filtrar"}</span>
+      </div>
+      <div className="mt-2 flex items-baseline gap-3">
+        <span className={`num text-2xl font-semibold ${t > 0.005 ? "text-up" : t < -0.005 ? "text-down" : "text-muted"}`}>
+          {t >= 0 ? "+" : ""}
+          {brl(t)}
+        </span>
+        <span className={`num text-sm ${t > 0.005 ? "text-up" : t < -0.005 ? "text-down" : "text-muted"}`}>{pc(s.ret)}</span>
+      </div>
+      <AreaSpark points={spark} color={color} />
+      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        <div className="flex justify-between"><dt className="text-muted">Em aberto</dt><dd className={`num ${s.unrealized >= 0 ? "text-up" : "text-down"}`}>{s.unrealized >= 0 ? "+" : ""}{brl(s.unrealized)}</dd></div>
+        <div className="flex justify-between"><dt className="text-muted">Já realizado</dt><dd className={`num ${s.realized >= 0 ? "text-up" : "text-down"}`}>{s.realized >= 0 ? "+" : ""}{brl(s.realized)}</dd></div>
+        <div className="flex justify-between"><dt className="text-muted">Investido</dt><dd className="num">{brl(s.invested)}</dd></div>
+        <div className="flex justify-between"><dt className="text-muted">Vale agora</dt><dd className="num">{brl(s.value)}</dd></div>
+        <div className="flex justify-between"><dt className="text-muted">Abertas / esperando</dt><dd className="num">{s.open} / {s.pending}</dd></div>
+        <div className="flex justify-between"><dt className="text-muted">Acertos / erros</dt><dd className="num">{s.wins} / {s.losses}</dd></div>
+      </dl>
+      {s.reserved > 0 && <p className="mt-1 text-[11px] text-muted">{brl(s.reserved)} reservados em ordens esperando o mercado abrir.</p>}
+      {(s.best || s.worst) && (
+        <p className="mt-1 truncate text-[11px] text-muted">
+          {s.best && s.best.pnl > 0 && <>Melhor: <span className="text-up">{s.best.label.slice(0, 28)} {brl(s.best.pnl)}</span> </>}
+          {s.worst && s.worst.pnl < 0 && <>· Pior: <span className="text-down">{s.worst.label.slice(0, 28)} {brl(s.worst.pnl)}</span></>}
+        </p>
+      )}
+      {extra}
+    </button>
+  );
+}
+
+function AreaCards({ c, area, onArea }: { c: Carteira; area: AreaFilter; onArea: (a: AreaFilter) => void }) {
+  const b = areaSummary(c, "bolsa");
+  const p = areaSummary(c, "polymarket");
+  const series = (k: "pnlBolsa" | "pnlPoly") => c.equity.map((e) => e[k]).filter((v): v is number => typeof v === "number");
+  const toggle = (a: AreaFilter) => onArea(area === a ? "todas" : a);
+  return (
+    <section className="focus-group grid gap-3 md:grid-cols-2">
+      <AreaCard title="Bolsa" icon="▲" color="#22c55e" accent="border-up/60" s={b} spark={series("pnlBolsa")} active={area === "bolsa"} onClick={() => toggle("bolsa")} />
+      <AreaCard
+        title="Polymarket"
+        icon="◆"
+        color="#8b5cf6"
+        accent="border-poly/60"
+        s={p}
+        spark={series("pnlPoly")}
+        active={area === "polymarket"}
+        onClick={() => toggle("polymarket")}
+        extra={<p className="mt-1 text-[11px] text-muted">Apostas valem pelo preço de venda de agora; o resultado final só sai quando cada mercado fecha.</p>}
+      />
+    </section>
+  );
+}
+
+function AreaTabs({ area, onArea, c }: { area: AreaFilter; onArea: (a: AreaFilter) => void; c: Carteira }) {
+  const count = (a: AreaFilter) => c.positions.filter((p) => p.status !== "fechada" && inArea(p, a)).length;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-xs text-muted">Mostrar:</span>
+      <div className="inline-flex rounded-lg border border-line bg-card p-0.5 text-xs">
+        {(["todas", "bolsa", "polymarket"] as const).map((a) => (
+          <button
+            key={a}
+            type="button"
+            onClick={() => onArea(a)}
+            className={`rounded-md px-3 py-1 font-medium ${area === a ? (a === "polymarket" ? "bg-poly text-white" : a === "bolsa" ? "bg-up text-black" : "bg-info text-black") : "text-muted hover:text-text"}`}
+          >
+            {AREA_LABEL[a]} ({count(a)})
+          </button>
+        ))}
+      </div>
     </div>
   );
 }

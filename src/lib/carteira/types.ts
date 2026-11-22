@@ -60,6 +60,9 @@ export interface EquityPoint {
   value: number;
   /** Dinheiro colocado até aquele momento (para o gráfico não contar depósitos como lucro). */
   base?: number;
+  /** Resultado acumulado (aberto + realizado) de cada área naquele momento. */
+  pnlBolsa?: number;
+  pnlPoly?: number;
 }
 
 export interface Carteira {

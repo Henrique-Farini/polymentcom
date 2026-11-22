@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allocateWholeShares, applyDividend, applyQuote, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, positionPnl, recordEquity, totalValue } from "@/lib/carteira/engine";
+import { allocateWholeShares, applyDividend, applyQuote, areaSummary, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, positionPnl, recordEquity, totalValue } from "@/lib/carteira/engine";
 
 const T0 = 1_700_000_000_000;
 const order = { area: "bolsa" as const, ref: "PETR4.SA", label: "PETR4", sub: "Petrobras", currency: "BRL" as const, amountBRL: 1000, stopPct: 0.08, holdDays: 7 };
@@ -150,5 +150,31 @@ describe("allocateWholeShares", () => {
 
   it("devolve vazio quando nada cabe", () => {
     expect(allocateWholeShares([{ key: "X", price: 1000, weight: 1 }], 100)).toEqual([]);
+  });
+});
+
+describe("areaSummary", () => {
+  it("separa o resultado da Bolsa e do Polymarket", () => {
+    const c = emptyCarteira(10_000, T0);
+    const b = placeOrder(c, { ...order, amountBRL: 1000 }, T0);
+    applyQuote(c, b, { price: 40, time: T0 + 1 }, 1, T0 + 1);
+    applyQuote(c, b, { price: 44, time: T0 + 2 }, 1, T0 + 2); // +100 em aberto
+    const p = placeOrder(c, { ...order, area: "polymarket", ref: "9", currency: "USD", stopPct: null, amountBRL: 500 }, T0);
+    applyQuote(c, p, { price: 0.25, time: T0 + 1 }, 5, T0 + 1);
+    applyQuote(c, p, { price: 1, time: T0 + 3, resolved: true }, 5, T0 + 3); // +1500 realizado
+    const pend = placeOrder(c, { ...order, amountBRL: 300 }, T0 + 4);
+
+    const sb = areaSummary(c, "bolsa");
+    expect(sb.unrealized).toBeCloseTo(100);
+    expect(sb.realized).toBe(0);
+    expect(sb.pending).toBe(1);
+    expect(sb.reserved).toBe(300);
+    expect(sb.ret).toBeCloseTo(0.1);
+
+    const sp = areaSummary(c, "polymarket");
+    expect(sp.realized).toBeCloseTo(1500);
+    expect(sp.wins).toBe(1);
+    expect(sp.ret).toBeCloseTo(3);
+    expect(pend.status).toBe("pendente");
   });
 });
