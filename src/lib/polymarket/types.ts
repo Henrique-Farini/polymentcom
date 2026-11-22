@@ -23,6 +23,10 @@ export interface PolyMarket {
   bestBid: number | null;
   bestAsk: number | null;
   endDate: string | null;
+  /** Início do jogo (mercados de esporte). */
+  gameStart?: string | null;
+  /** Resultado já proposto: mercado praticamente decidido. */
+  settling?: boolean;
   tokenIds: string[];
 }
 

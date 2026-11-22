@@ -102,7 +102,9 @@ export function pickLongshots(
   const now = opts.now ?? Date.now();
   const out: LongshotPick[] = [];
   for (const m of markets) {
-    if (!m.endDate || m.liquidity < settings.minLiquidity) continue;
+    if (!m.endDate || m.liquidity < settings.minLiquidity || m.settling) continue;
+    // Jogos: se já começou (ou começa logo), não é a aposta testada; seria apostar com o jogo rolando.
+    if (m.gameStart && (Date.parse(m.gameStart) - now) / 86_400_000 < opts.minDays) continue;
     const days = (Date.parse(m.endDate) - now) / 86_400_000;
     if (!(days >= opts.minDays && days <= opts.maxDays)) continue;
     if (m.spread !== null && m.spread > 0.04) continue;

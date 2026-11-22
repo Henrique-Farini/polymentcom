@@ -26,6 +26,8 @@ interface GammaMarket {
   closed?: boolean;
   acceptingOrders?: boolean;
   endDate?: string;
+  gameStartTime?: string;
+  umaResolutionStatus?: string;
   volume24hr?: number;
   volume1wk?: number;
   liquidityNum?: number;
@@ -139,6 +141,10 @@ function toMarket(m: GammaMarket, ev: GammaEvent | undefined): PolyMarket | null
     bestBid: num(m.bestBid),
     bestAsk: num(m.bestAsk),
     endDate: m.endDate ?? null,
+    // Jogos: o "fim" do mercado costuma ser dias depois; o que importa é quando o jogo começa.
+    gameStart: m.gameStartTime ? new Date(m.gameStartTime.replace(" ", "T").replace(/\+00$/, "Z")).toISOString() : null,
+    // Resultado já proposto ao oráculo: o mercado está praticamente decidido.
+    settling: m.umaResolutionStatus === "proposed" || m.umaResolutionStatus === "disputed",
     tokenIds: parseArray(m.clobTokenIds),
   };
 }

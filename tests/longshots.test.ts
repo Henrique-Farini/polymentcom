@@ -40,3 +40,17 @@ describe("um assunto por aposta", () => {
     expect(r).toEqual([]);
   });
 });
+
+describe("jogos e mercados decididos", () => {
+  it("não aposta em jogo que já começou ou começa em menos de 2 dias, mesmo com o fim do mercado longe", () => {
+    const live = mk("tenis", 0.28, 7, { gameStart: new Date(NOW - 3_600_000).toISOString() });
+    const soon = mk("jogo", 0.2, 7, { gameStart: new Date(NOW + 86_400_000).toISOString() });
+    const later = mk("depois", 0.2, 7, { gameStart: new Date(NOW + 4 * 86_400_000).toISOString() });
+    const r = pickLongshots([live, soon, later], DEFAULT_POLY_SETTINGS, { minDays: 2, maxDays: 9, now: NOW });
+    expect(r.map((x) => x.m.id)).toEqual(["depois"]);
+  });
+
+  it("ignora mercado com resultado já proposto", () => {
+    expect(pickLongshots([mk("a", 0.2, 5, { settling: true })], DEFAULT_POLY_SETTINGS, { minDays: 2, maxDays: 9, now: NOW })).toEqual([]);
+  });
+});
