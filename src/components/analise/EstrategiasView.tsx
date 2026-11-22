@@ -12,6 +12,8 @@ const LINES: { key: string; color: string; short: string }[] = [
   { key: "app", color: "#d95926", short: "Regra antiga" },
   { key: "nucleo", color: "#199e70", short: "Núcleo (ETFs)" },
   { key: "^BVSP", color: "#c98500", short: "Ibovespa" },
+  // Referência neutra (não é uma estratégia): cinza tracejado.
+  { key: "cdi", color: "#9aa7a4", short: "CDI" },
 ];
 
 export function EstrategiasView() {
@@ -54,7 +56,7 @@ export function EstrategiasView() {
       </div>
 
       {nova && app && (
-        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
           <Insight title="Regra nova × regra antiga" value={`${pct(nova.totalAfterCosts, 0)} × ${pct(app.totalAfterCosts, 0)}`} tone={nova.totalAfterCosts > app.totalAfterCosts ? "up" : "down"}>
             Total depois dos custos. Pior queda {pct(nova.maxDD, 0)} contra {pct(app.maxDD, 0)}.
           </Insight>
@@ -64,6 +66,11 @@ export function EstrategiasView() {
           {appStop && novaStop && (
             <Insight title="O stop ajudou?" value={appStop.total < app.total && novaStop.total < nova.total ? "Não" : "Às vezes"} tone="warn">
               Stop 8% na regra antiga: {pct(app.total, 0)} → {pct(appStop.total, 0)}. Stop 15% na nova: {pct(nova.total, 0)} → {pct(novaStop.total, 0)}.
+            </Insight>
+          )}
+          {by("cdi") && (
+            <Insight title="Contra a renda fixa (CDI)" value={`${pct(nova.overCdi ?? 0, 1)} ao ano`} tone={(nova.overCdi ?? 0) > 0 ? "up" : "down"}>
+              O CDI rendeu {pct(by("cdi")!.cagr, 1)} ao ano no período, sem risco. A regra nova rendeu {pct(nova.cagr, 1)}.
             </Insight>
           )}
           <Insight title="Quanto troca a cada revisão" value={`${pct(nova.turnover, 0, false)} × ${pct(app.turnover, 0, false)}`}>
@@ -92,6 +99,7 @@ export function EstrategiasView() {
                 <th className="px-2 py-2 text-right font-medium">Com custos</th>
                 <th className="px-2 py-2 text-right font-medium">Ao ano</th>
                 <th className="px-2 py-2 text-right font-medium" title="Retorno ao ano na primeira e na segunda metade do período. Uma regra boa funciona nas duas.">1ª / 2ª metade</th>
+                <th className="px-2 py-2 text-right font-medium" title="Quanto rendeu por ano acima (ou abaixo) do CDI. Abaixo de zero = teria sido melhor deixar na renda fixa.">Acima do CDI</th>
                 <th className="px-2 py-2 text-right font-medium">Volatilidade</th>
                 <th className="px-2 py-2 text-right font-medium">Ret ÷ risco</th>
                 <th className="px-2 py-2 text-right font-medium">Pior queda</th>
@@ -112,6 +120,7 @@ export function EstrategiasView() {
                   </td>
                   <td className="num px-2 text-right">{pct(s.cagr)}</td>
                   <td className="num px-2 text-right text-muted">{pct(s.cagrA, 0)} / {pct(s.cagrB, 0)}</td>
+                  <td className={`num px-2 text-right font-semibold ${s.key === "cdi" ? "text-muted" : (s.overCdi ?? 0) >= 0 ? "text-up" : "text-down"}`}>{s.key === "cdi" || s.overCdi == null ? "–" : `${pct(s.overCdi, 1)} a.a.`}</td>
                   <td className="num px-2 text-right">{pct(s.vol, 0, false)}</td>
                   <td className="num px-2 text-right font-semibold">{s.retRisk.toFixed(2)}</td>
                   <td className="num px-2 text-right text-down">{pct(s.maxDD, 0)}</td>
@@ -161,8 +170,10 @@ function EquityLines({ strategies }: { strategies: StrategyResult[] }) {
   const yMin = Math.min(...all) * 0.95;
   const yMax = Math.max(...all) * 1.03;
   const sx = (i: number) => pad.l + (i / Math.max(1, n - 1)) * (W - pad.l - pad.r);
-  const sy = (v: number) => pad.t + ((yMax - v) / (yMax - yMin)) * (H - pad.t - pad.b);
-  const ticks = [1, ...[1.5, 2, 2.5, 3, 3.5, 4].filter((v) => v > yMin && v < yMax)];
+  // Escala logarítmica: a mesma distância vertical = a mesma variação percentual (justo para 16 anos).
+  const L = (v: number) => Math.log(Math.max(v, 1e-6));
+  const sy = (v: number) => pad.t + ((L(yMax) - L(v)) / (L(yMax) - L(yMin))) * (H - pad.t - pad.b);
+  const ticks = [0.5, 1, 2, 5, 10, 20, 50, 100].filter((v) => v >= yMin && v <= yMax);
   // Rótulos no fim das linhas, afastados para não se sobreporem.
   const labelY = new Map<string, number>();
   [...lines]
@@ -199,7 +210,7 @@ function EquityLines({ strategies }: { strategies: StrategyResult[] }) {
         {ticks.map((v) => (
           <g key={v}>
             <line x1={pad.l} x2={W - pad.r} y1={sy(v)} y2={sy(v)} stroke={v === 1 ? "#4b5a57" : "#1a2321"} strokeDasharray={v === 1 ? "4 4" : undefined} />
-            <text x={pad.l - 6} y={sy(v) + 3} fontSize="10" fill="#7c8a87" textAnchor="end">{v.toFixed(1)}×</text>
+            <text x={pad.l - 6} y={sy(v) + 3} fontSize="10" fill="#7c8a87" textAnchor="end">{v}×</text>
           </g>
         ))}
         {lines.map((l) => {
@@ -208,7 +219,7 @@ function EquityLines({ strategies }: { strategies: StrategyResult[] }) {
           const dim = focus && focus !== l.key;
           return (
             <g key={l.key} className={`focus-item ${dim ? "dimmed" : ""}`} onMouseEnter={() => setFocus(l.key)} onMouseLeave={() => setFocus(null)}>
-              <path d={d} fill="none" stroke={l.color} strokeWidth={focus === l.key ? 3 : 2} />
+              <path d={d} fill="none" stroke={l.color} strokeWidth={focus === l.key ? 3 : 2} strokeDasharray={l.key === "cdi" ? "6 4" : undefined} />
               <path d={d} fill="none" stroke="transparent" strokeWidth={12} />
               <text x={W - pad.r + 6} y={(labelY.get(l.key) ?? sy(last.v)) + 3} fontSize="11" fill="#c9d3d1">
                 {l.short} {last.v.toFixed(2)}×

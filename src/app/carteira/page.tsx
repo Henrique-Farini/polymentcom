@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, LiveBadge } from "@/components/ui";
 import { positionPnl, positionValue, totalValue } from "@/lib/carteira/engine";
+import { estimateTax, TAX_LABEL } from "@/lib/carteira/ir";
 import type { Carteira, CarteiraEvent, EquityPoint, Position } from "@/lib/carteira/types";
 import { B3_EQUIVALENT, DEFAULT_UNIVERSE, displaySymbol, execSymbol } from "@/lib/bolsa/universe";
 import { useConta } from "@/lib/client/conta";
@@ -33,7 +34,7 @@ async function post(body: Record<string, unknown>) {
 }
 
 export default function CarteiraPage() {
-  const poll = usePolling<{ carteira: Carteira | null; at: number }>("/api/carteira", 30_000);
+  const poll = usePolling<{ carteira: Carteira | null; cdi: { since: number; annual: number } | null; at: number }>("/api/carteira", 30_000);
   const [local, setLocal] = useState<Carteira | null | undefined>(undefined);
   const c = local !== undefined && (!poll.data || (local?.lastCheck ?? 0) >= (poll.data.carteira?.lastCheck ?? 0)) ? local : poll.data?.carteira ?? null;
   const [busy, setBusy] = useState(false);
@@ -108,6 +109,7 @@ export default function CarteiraPage() {
       ) : (
         <>
           <Resumo c={c} now={now} />
+          <RaioX c={c} cdi={poll.data?.cdi ?? null} />
           <Card className="p-4">
             <h2 className="text-sm font-semibold">Patrimônio ao longo do teste</h2>
             <p className="mb-2 text-xs text-muted">Linha tracejada = valor inicial. Passe o mouse para ver cada momento.</p>
@@ -704,4 +706,109 @@ function useNotifyEvents(events: CarteiraEvent[] | null) {
     if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
     for (const e of fresh) new Notification("Carteira de teste", { body: e.text, tag: `carteira-${e.t}` });
   }, [events]);
+}
+
+/* ----------------------------- raio-x: CDI, IR e concentração ----------------------------- */
+
+const GROUP_COLOR: Record<string, string> = {
+  Núcleo: "#199e70",
+  Momento: "#3987e5",
+  "Baixa volatilidade": "#c98500",
+  Polymarket: "#8b5cf6",
+  "Escolha manual": "#d95926",
+  Caixa: "#4b5a57",
+};
+
+function groupOf(p: Position) {
+  if (p.area === "polymarket") return "Polymarket";
+  if (/ETF Ibovespa|ETF S&P/.test(p.sub)) return "Núcleo";
+  if (p.sub.includes("momento")) return "Momento";
+  if (p.sub.includes("baixa volatilidade")) return "Baixa volatilidade";
+  return "Escolha manual";
+}
+
+function RaioX({ c, cdi }: { c: Carteira; cdi: { since: number; annual: number } | null }) {
+  const [hover, setHover] = useState<string | null>(null);
+  const total = totalValue(c);
+  const ret = total / c.startCash - 1;
+  const tax = estimateTax(c);
+  const open = c.positions.filter((p) => p.status !== "fechada");
+
+  const groups = new Map<string, number>();
+  for (const p of open) groups.set(groupOf(p), (groups.get(groupOf(p)) ?? 0) + positionValue(p));
+  if (c.cash > 0.5) groups.set("Caixa", c.cash);
+  const parts = [...groups.entries()].sort((a, b) => b[1] - a[1]);
+  const biggest = [...open].sort((a, b) => positionValue(b) - positionValue(a))[0];
+  const biggestShare = biggest ? positionValue(biggest) / total : 0;
+
+  return (
+    <div className="grid gap-3 lg:grid-cols-3">
+      <Card className="p-4">
+        <div className="text-xs text-muted">Contra a renda fixa (CDI)</div>
+        {cdi ? (
+          <>
+            <div className={`num mt-1 text-xl font-semibold ${ret - cdi.since >= 0 ? "text-up" : "text-down"}`}>
+              {ret - cdi.since >= 0 ? "Ganhando" : "Perdendo"} por {pc(Math.abs(ret - cdi.since))}
+            </div>
+            <div className="text-xs text-muted">
+              No CDI ({pc(cdi.annual, 1)} ao ano) o mesmo dinheiro teria rendido {pc(cdi.since)}, sem risco: {brl(c.startCash * (1 + cdi.since))}.
+            </div>
+          </>
+        ) : (
+          <div className="mt-1 text-sm text-muted">Sem dados do Banco Central agora.</div>
+        )}
+      </Card>
+      <Card className="p-4">
+        <div className="text-xs text-muted">Imposto de renda estimado</div>
+        <div className="num mt-1 text-xl font-semibold">{brl(tax.total)}</div>
+        <div className="text-xs text-muted">
+          Sobre {brl(tax.gross)} de resultado já realizado. Líquido: {brl(tax.gross - tax.total)}.
+        </div>
+        {tax.lines.length > 0 && (
+          <ul className="mt-2 space-y-0.5 text-[11px] text-muted">
+            {tax.lines.map((l) => (
+              <li key={l.month + l.cls}>
+                {l.month} · {TAX_LABEL[l.cls]}: {l.note}
+                {l.tax > 0 ? ` (${brl(l.tax)})` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+      <Card className="p-4">
+        <div className="text-xs text-muted">Onde está o dinheiro</div>
+        <div className="mt-2 flex h-4 overflow-hidden rounded" onMouseLeave={() => setHover(null)}>
+          {parts.map(([g, v]) => (
+            <div
+              key={g}
+              onMouseEnter={() => setHover(g)}
+              className={`focus-item h-full ${hover && hover !== g ? "dimmed" : ""}`}
+              style={{ width: `${(v / total) * 100}%`, background: GROUP_COLOR[g], borderRight: "2px solid var(--color-card)" }}
+              title={`${g}: ${brl(v)} (${pc(v / total, 0)})`}
+            />
+          ))}
+        </div>
+        <ul className="mt-2 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+          {parts.map(([g, v]) => (
+            <li
+              key={g}
+              onMouseEnter={() => setHover(g)}
+              onMouseLeave={() => setHover(null)}
+              className={`focus-item flex items-center gap-1.5 ${hover && hover !== g ? "dimmed" : ""}`}
+            >
+              <span className="h-2 w-2 rounded-sm" style={{ background: GROUP_COLOR[g] }} />
+              <span className="text-muted">{g}</span>
+              <span className="num ml-auto">{pc(v / total, 0)}</span>
+            </li>
+          ))}
+        </ul>
+        {biggest && (
+          <p className={`mt-2 text-[11px] ${biggestShare > 0.25 ? "text-warn" : "text-muted"}`}>
+            Maior posição: {biggest.label.slice(0, 40)} com {pc(biggestShare, 0)} do patrimônio
+            {biggestShare > 0.25 ? ". Acima de 25% é concentração alta." : "."}
+          </p>
+        )}
+      </Card>
+    </div>
+  );
 }

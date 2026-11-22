@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { editar, editarTeste, fechar, getCarteira, montarAuto, novaCarteira, ordem, startLoop, type NewOrder } from "@/lib/carteira/server";
+import { cdiReturn, getCdi } from "@/lib/server/cdi";
 import { isLocalRequest } from "@/lib/server/local";
 
 export const runtime = "nodejs";
@@ -19,7 +20,17 @@ export async function GET() {
   startLoop();
   try {
     const c = await getCarteira();
-    return NextResponse.json({ carteira: c, at: Date.now() });
+    // Quanto o mesmo dinheiro teria rendido no CDI desde o começo do teste.
+    let cdi: { since: number; annual: number } | null = null;
+    if (c) {
+      try {
+        const idx = (await getCdi()).value;
+        cdi = { since: cdiReturn(idx, c.createdAt / 1000, Date.now() / 1000), annual: idx.annualNow };
+      } catch {
+        /* sem CDI agora */
+      }
+    }
+    return NextResponse.json({ carteira: c, cdi, at: Date.now() });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }

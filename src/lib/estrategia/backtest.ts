@@ -6,6 +6,7 @@ import { CORE_ETFS, MOMENTUM_UNIVERSE } from "@/lib/bolsa/universe";
 import type { Perfil } from "@/lib/perfil";
 import { pickBolsa } from "@/lib/picks";
 import { cached } from "@/lib/server/cache";
+import { cdiReturn, getCdi } from "@/lib/server/cdi";
 import { mapLimit } from "@/lib/server/net";
 import { scoreBolsa } from "@/lib/score/bolsa";
 import { DEFAULT_BOLSA_SETTINGS } from "@/lib/score/types";
@@ -123,6 +124,8 @@ export interface StrategyResult {
   /** Retorno ao ano na 1ª e na 2ª metade do período. */
   cagrA: number;
   cagrB: number;
+  /** Retorno ao ano acima do CDI (negativo = perdeu para a renda fixa). */
+  overCdi?: number | null;
   equity: { t: number; v: number }[];
   lastPicks: string[];
 }
@@ -203,7 +206,7 @@ export interface BacktestResult {
 }
 
 export function runBacktest(perfil: Perfil, n: number, periodDays: 7 | 28) {
-  return cached(`bt:run:v8:${perfil}:${n}:${periodDays}`, 12 * 60 * 60_000, async (): Promise<BacktestResult> => {
+  return cached(`bt:run:v9:${perfil}:${n}:${periodDays}`, 12 * 60 * 60_000, async (): Promise<BacktestResult> => {
     const symbols = [...MOMENTUM_UNIVERSE, ...CORE_ETFS];
     const benches = ["^BVSP", "^GSPC"];
     const all = [...symbols, ...benches];
@@ -313,6 +316,17 @@ export function runBacktest(perfil: Perfil, n: number, periodDays: 7 | 28) {
       });
       out.push(summarize({ key: sym, label, desc: "Referência: o índice inteiro, sem escolher nada.", pick: () => [] }, rets, ppy));
     }
+
+    // CDI: o que o dinheiro rende parado, sem risco. É a régua de comparação no Brasil.
+    try {
+      const cdi = (await getCdi()).value;
+      const rets = used.map(({ t }) => ({ t, r: cdiReturn(cdi, t / 1000, t / 1000 + periodDays * 86400), picks: ["CDI"] }));
+      out.push(summarize({ key: "cdi", label: "CDI (renda fixa sem risco)", desc: "Quanto o dinheiro teria rendido parado, num CDB/Tesouro Selic que paga 100% do CDI, antes do IR.", pick: () => [] }, rets, ppy));
+    } catch {
+      /* sem CDI agora: segue sem a referência */
+    }
+    const cdiRes = out.find((s) => s.key === "cdi");
+    for (const s of out) s.overCdi = cdiRes ? s.cagr - cdiRes.cagr : null;
 
     const from = used[0]?.t ?? START * 1000;
     const to = used.at(-1)?.t ?? end * 1000;
