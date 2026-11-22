@@ -4,7 +4,7 @@ import path from "node:path";
 import { getBolsaAnalysis } from "@/lib/analise/bolsa";
 import { getAssets, getDividends, type Dividend } from "@/lib/bolsa/server";
 import { CORE_ETFS, MOMENTUM_UNIVERSE, displaySymbol } from "@/lib/bolsa/universe";
-import { pickPoly, pickRegraNova } from "@/lib/picks";
+import { pickLongshots, pickRegraNova } from "@/lib/picks";
 import { getMarketQuote, getMarkets } from "@/lib/polymarket/server";
 import { DEFAULT_POLY_SETTINGS } from "@/lib/score/types";
 import { allocateWholeShares, applyDividend, applyQuote, brl, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
@@ -88,7 +88,9 @@ async function refresh(c: Carteira) {
       const q = pq.get(p.ref);
       if (!q) continue;
       // Compra pelo preço de venda do livro (ask); avalia pelo preço de compra (bid), como seria na vida real.
-      const price = q.resolved ? q.price : p.status === "pendente" ? q.ask : q.bid;
+      // Lado "Não": compra pelo ask do Não (1 − bid do Sim) e avalia pelo bid do Não (1 − ask do Sim).
+      const no = p.side === "nao";
+      const price = q.resolved ? (no ? 1 - q.price : q.price) : p.status === "pendente" ? (no ? 1 - q.bid : q.ask) : no ? 1 - q.ask : q.bid;
       applyQuote(c, p, { price, time: now, resolved: q.resolved }, fx, now);
     }
   }
@@ -135,7 +137,7 @@ export function novaCarteira(cash: number, days: number | null) {
   });
 }
 
-export type NewOrder = Pick<Position, "area" | "ref" | "label" | "sub" | "currency" | "amountBRL" | "stopPct" | "holdDays" | "wholeShares">;
+export type NewOrder = Pick<Position, "area" | "ref" | "label" | "sub" | "currency" | "amountBRL" | "stopPct" | "holdDays" | "wholeShares" | "side">;
 
 export async function ordem(o: NewOrder) {
   await withLock(async () => {
@@ -222,10 +224,14 @@ export async function montarAuto(o: AutoOptions) {
   lowVol.forEach((s) => add(s.symbol, third / lowVol.length, `baixa volatilidade (${(s.vol1y! * 100).toFixed(0)}% ao ano)`));
 
   // Polymarket: só o que termina antes do prazo acabar.
-  const deadline = Date.now() + o.holdDays * 86_400_000;
+  const deadlineDays = o.holdDays;
+  // Regra do Polymarket: azarões (5–30%) em mercados que terminam no prazo, muitas apostas pequenas, até o resultado.
+  const polyBudget = Math.floor(cash * o.partePoly);
   const polyPicks =
-    o.partePoly > 0 ? pickPoly(markets.filter((m) => m.endDate && Date.parse(m.endDate) <= deadline), DEFAULT_POLY_SETTINGS, 2) : [];
-  const polyCash = polyPicks.length ? Math.floor(cash * o.partePoly) : 0;
+    o.partePoly > 0
+      ? pickLongshots(markets, DEFAULT_POLY_SETTINGS, { minDays: 2, maxDays: Math.min(9, deadlineDays), n: Math.max(1, Math.min(10, Math.floor(polyBudget / 10))) })
+      : [];
+  const polyCash = polyPicks.length ? polyBudget : 0;
   const bolsaCash = cash - polyCash;
 
   const bySym = new Map(stats.map((s) => [s.symbol, s]));
@@ -250,15 +256,16 @@ export async function montarAuto(o: AutoOptions) {
       }),
     ),
     ...polyPicks.map(
-      ({ m }): NewOrder => ({
+      ({ m, side, price }): NewOrder => ({
         area: "polymarket",
         ref: m.id,
-        label: `${m.outcomes[0] ?? "Sim"} · ${m.question}`,
-        sub: m.category,
+        label: `${side === "sim" ? m.outcomes[0] ?? "Sim" : m.outcomes[1] ?? "Não"} a ${Math.round(price * 100)}¢ · ${m.question}`,
+        sub: `${m.category} · azarão, segura até o resultado`,
         currency: "USD",
         amountBRL: cut(polyCash / polyPicks.length),
         stopPct: null,
-        holdDays: o.holdDays,
+        holdDays: o.holdDays + 7,
+        side,
       }),
     ),
   ].filter((x) => x.amountBRL >= 1);
@@ -274,7 +281,7 @@ export async function montarAuto(o: AutoOptions) {
       kind: "info",
       text:
         `Regra nova (núcleo + momento + baixa volatilidade): ${alloc.length} ordens de ações inteiras somando ${brl(alloc.reduce((s, a) => s + a.amount, 0))}` +
-        `${polyCash ? ` e ${brl(polyCash)} no Polymarket` : ""}. Prazo ${o.holdDays} dias${o.stop ? `, stop ${Math.round(o.stop * 100)}% nas ações` : ", sem stop"}.` +
+        `${polyCash ? ` e ${brl(polyCash)} em ${polyPicks.length} apostas pequenas em azarões do Polymarket` : ""}. Prazo ${o.holdDays} dias${o.stop ? `, stop ${Math.round(o.stop * 100)}% nas ações` : ", sem stop"}.` +
         `${skipped.length ? ` Ficaram de fora por não caber nem 1 ação: ${skipped.join(", ")}.` : ""}`,
     });
     await save(c);

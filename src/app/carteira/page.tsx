@@ -329,6 +329,8 @@ function Investir({
                 <option value={0.05}>5%</option>
                 <option value={0.1}>10%</option>
                 <option value={0.2}>20%</option>
+                <option value={0.5}>50%</option>
+                <option value={1}>100% (só Polymarket)</option>
               </select>
             </Lbl>
             <Lbl t="Stop nas ações">
@@ -350,7 +352,11 @@ function Investir({
               {busy ? "Montando…" : "Montar carteira"}
             </button>
           </div>
-          <p className="text-xs text-muted">Polymarket: só entra em mercados que terminam dentro do prazo e segura até o resultado, sem pagar o spread de novo para sair.</p>
+          <p className="text-xs text-muted">
+            Polymarket: usa a regra que melhor se saiu no teste com ~1.100 mercados resolvidos: azarões (5–30%) que terminam em 2 a 9 dias, até 10 apostas pequenas, seguradas até o resultado.
+            Perde cerca de 3 em cada 4 apostas; o lucro vem das poucas que acertam. Detalhes em{" "}
+            <Link href="/polymarket/oportunidades" className="text-info hover:underline">Polymarket → Oportunidades</Link>.
+          </p>
         </div>
       ) : (
         <Manual cash={c.cash} busy={busy} defaultDays={daysLeft} defaultStop={conta.stop || 0.08} onOrder={onOrder} />

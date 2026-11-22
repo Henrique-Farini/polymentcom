@@ -39,7 +39,7 @@ export function totalValue(c: Carteira): number {
 /** Reserva o dinheiro e cria a ordem. A compra acontece na próxima leitura de preço. */
 export function placeOrder(
   c: Carteira,
-  o: Pick<Position, "area" | "ref" | "label" | "sub" | "currency" | "amountBRL" | "stopPct" | "holdDays" | "wholeShares">,
+  o: Pick<Position, "area" | "ref" | "label" | "sub" | "currency" | "amountBRL" | "stopPct" | "holdDays" | "wholeShares" | "side">,
   now = Date.now(),
 ): Position {
   if (!(o.amountBRL > 0)) throw new Error("Valor precisa ser maior que zero");

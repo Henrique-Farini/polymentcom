@@ -65,3 +65,32 @@ export function pickRegraNova(stats: AssetStats[], universe: string[], core: str
   const coreStats = stats.filter((s) => core.includes(s.symbol));
   return { core: coreStats, momentum, lowVol };
 }
+
+export interface LongshotPick {
+  m: PolyMarket;
+  side: "sim" | "nao";
+  /** Preço para comprar o lado escolhido (ask). */
+  price: number;
+  days: number;
+}
+
+/**
+ * Regra do Polymarket (melhor resultado no teste com ~1.100 mercados resolvidos): comprar o lado
+ * azarão (custa 5–30%) cerca de uma semana antes do fim e segurar até o resultado.
+ * Perde ~3 de cada 4 vezes: só faz sentido com muitas apostas pequenas.
+ */
+export function pickLongshots(markets: PolyMarket[], settings: PolySettings, opts: { minDays: number; maxDays: number; n?: number; now?: number }) {
+  const now = opts.now ?? Date.now();
+  const out: LongshotPick[] = [];
+  for (const m of markets) {
+    if (!m.endDate || m.liquidity < settings.minLiquidity) continue;
+    const days = (Date.parse(m.endDate) - now) / 86_400_000;
+    if (!(days >= opts.minDays && days <= opts.maxDays)) continue;
+    if (m.spread !== null && m.spread > 0.04) continue;
+    const askYes = m.bestAsk ?? m.probability;
+    const askNo = 1 - (m.bestBid ?? m.probability);
+    if (askYes >= 0.05 && askYes < 0.3) out.push({ m, side: "sim", price: askYes, days });
+    else if (askNo >= 0.05 && askNo < 0.3) out.push({ m, side: "nao", price: askNo, days });
+  }
+  return out.sort((a, b) => b.m.liquidity - a.m.liquidity).slice(0, opts.n ?? 20);
+}

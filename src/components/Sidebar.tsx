@@ -38,6 +38,7 @@ const AREAS = [
     icon: "◆",
     links: [
       { href: "/polymarket/terminal", label: "Terminal" },
+      { href: "/polymarket/oportunidades", label: "Oportunidades" },
       { href: "/polymarket", label: "Ranking ao vivo" },
       { href: "/polymarket/config", label: "Configurações" },
     ],
@@ -138,7 +139,7 @@ export function Sidebar() {
   const path = usePathname();
   const isActive = (href: string) =>
     href === "/bolsa" || href === "/polymarket"
-      ? path === href || (path.startsWith(href + "/") && !path.endsWith("/config") && !path.endsWith("/terminal"))
+      ? path === href || (path.startsWith(href + "/") && !path.endsWith("/config") && !path.endsWith("/terminal") && !path.endsWith("/oportunidades"))
       : path === href;
 
   return (

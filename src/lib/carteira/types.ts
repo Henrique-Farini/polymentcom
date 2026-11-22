@@ -45,6 +45,8 @@ export interface Position {
   divPaid?: number[];
   /** Na B3 só se compra ação inteira (mercado fracionário: mínimo 1 ação). */
   wholeShares?: boolean;
+  /** Polymarket: qual lado foi comprado (padrão: "sim", o primeiro resultado). */
+  side?: "sim" | "nao";
 }
 
 export interface CarteiraEvent {

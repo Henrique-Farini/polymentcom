@@ -69,7 +69,7 @@ export async function POST(req: Request) {
       }
       case "auto":
         c = await montarAuto({
-          partePoly: num(b.partePoly, 0, 0.3, 0.1),
+          partePoly: num(b.partePoly, 0, 1, 0.1),
           nAcoes: Math.round(num(b.nAcoes ?? b.nMomento, 1, 8, 4)),
           stop: stopOf(b.stop),
           holdDays: num(b.dias, 1, 365, 7),
