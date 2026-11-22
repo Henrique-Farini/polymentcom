@@ -48,6 +48,32 @@ Menu no canto inferior da barra lateral, com:
 
 Nos gráficos, mapas de calor, tabelas e legendas, o item sob o mouse ganha foco e os outros escurecem. Na Análise, a tabela e o gráfico risco × retorno estão ligados. No Terminal, passar o mouse num indicador (MM9, MM21…) destaca a linha dele.
 
+### Carteira de teste (`/carteira`)
+
+É uma carteira com dinheiro fictício e preços reais. Nenhuma ordem vai para corretora. Ela fica salva em `data/carteira.json`. O servidor confere os preços a cada minuto, mesmo com a página fechada, enquanto o `npm run dev` estiver rodando.
+
+Como ela simula a vida real:
+- As ações da B3 só são compradas com o pregão aberto, e sempre em quantidades inteiras. O troco volta para o caixa.
+- Os dividendos recebidos entram no caixa.
+- No Polymarket, a compra é feita pelo preço de venda do livro, e a posição é avaliada pelo preço de compra.
+
+Você pode comprar, vender e editar valor, stop e prazo de cada posição. Também dá para mudar a duração do teste, colocar mais dinheiro fictício ou recomeçar.
+
+O botão "O app escolhe" usa a **regra nova**:
+- um terço em BOVA11 + IVVB11 (o núcleo);
+- um terço nas 4 ações com mais momento 12-1;
+- um terço nas 4 com menor volatilidade.
+
+Ações americanas entram como BDR, por exemplo AMD → A1MD34, e cripto entra como ETF da B3 (QBTC11, QETH11). O mapa fica em `src/lib/bolsa/universe.ts`.
+
+### Estratégias (`/analise` → ★ Estratégias)
+
+É um backtest de 2010 até hoje com cerca de 85 ativos que dá para comprar pelo Brasil, todos em reais e com preços ajustados por dividendos. Ele não olha o futuro: cada decisão usa só os dados disponíveis até aquela data. O código está em `src/lib/estrategia/backtest.ts`.
+
+O resultado sai separado em duas metades do período, para ver se a regra funciona nas duas. Os custos estimados são de 0,1% por compra e por venda.
+
+Cuidado: a lista usa as ações que existem hoje. Isso infla as estratégias que escolhem ações individuais. Os ETFs e os índices não têm esse problema.
+
 ### Análise de mercado (`/analise`)
 
 Estatística do passado, separada em duas abas:

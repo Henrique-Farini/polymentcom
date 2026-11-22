@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyQuote, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, positionPnl, recordEquity, totalValue } from "@/lib/carteira/engine";
+import { allocateWholeShares, applyDividend, applyQuote, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, positionPnl, recordEquity, totalValue } from "@/lib/carteira/engine";
 
 const T0 = 1_700_000_000_000;
 const order = { area: "bolsa" as const, ref: "PETR4.SA", label: "PETR4", sub: "Petrobras", currency: "BRL" as const, amountBRL: 1000, stopPct: 0.08, holdDays: 7 };
@@ -94,5 +94,61 @@ describe("carteira de teste", () => {
     expect(c.equity.length).toBe(1);
     recordEquity(c, T0 + 11 * 60_000);
     expect(c.equity.length).toBe(2);
+  });
+});
+
+describe("realismo da B3", () => {
+  it("compra só ações inteiras e devolve o troco", () => {
+    const c = emptyCarteira(1000, T0);
+    const p = placeOrder(c, { ...order, amountBRL: 175, wholeShares: true }, T0);
+    applyQuote(c, p, { price: 40, time: T0 + 1 }, 1, T0 + 1);
+    expect(p.qty).toBe(4);
+    expect(p.amountBRL).toBe(160);
+    expect(c.cash).toBe(840);
+  });
+
+  it("cancela quando o valor não compra nem 1 ação", () => {
+    const c = emptyCarteira(1000, T0);
+    const p = placeOrder(c, { ...order, amountBRL: 30, wholeShares: true }, T0);
+    applyQuote(c, p, { price: 40, time: T0 + 1 }, 1, T0 + 1);
+    expect(p.status).toBe("fechada");
+    expect(c.cash).toBe(1000);
+  });
+
+  it("credita dividendo só para quem comprou antes da data ex, uma vez", () => {
+    const c = emptyCarteira(1000, T0);
+    const p = placeOrder(c, { ...order, amountBRL: 400, wholeShares: true }, T0);
+    applyQuote(c, p, { price: 40, time: T0 + 1 }, 1, T0 + 1);
+    const cash = c.cash;
+    applyDividend(c, p, { date: (T0 - 86_400_000) / 1000, amount: 1 }, 1, T0 + 2); // antes da compra
+    expect(c.cash).toBe(cash);
+    const ex = (T0 + 86_400_000) / 1000;
+    applyDividend(c, p, { date: ex, amount: 1 }, 1, T0 + 2 * 86_400_000);
+    applyDividend(c, p, { date: ex, amount: 1 }, 1, T0 + 2 * 86_400_000);
+    expect(c.cash).toBe(cash + 10);
+    expect(positionPnl(p)).toBeCloseTo(10);
+  });
+});
+
+describe("allocateWholeShares", () => {
+  it("respeita o dinheiro, compra ações inteiras e usa o troco em quem está mais longe do alvo", () => {
+    const r = allocateWholeShares(
+      [
+        { key: "BOVA11", price: 163, weight: 1 },
+        { key: "IVVB11", price: 481, weight: 1 },
+        { key: "PETR4", price: 42, weight: 1 },
+      ],
+      700,
+      1,
+    );
+    const spent = r.reduce((s, x) => s + x.amount, 0);
+    expect(spent).toBeLessThanOrEqual(700);
+    expect(r.every((x) => Number.isInteger(x.shares))).toBe(true);
+    expect(r.find((x) => x.key === "BOVA11")?.shares).toBeGreaterThanOrEqual(1);
+    expect(700 - spent).toBeLessThan(42); // o troco não compra mais nenhuma ação
+  });
+
+  it("devolve vazio quando nada cabe", () => {
+    expect(allocateWholeShares([{ key: "X", price: 1000, weight: 1 }], 100)).toEqual([]);
   });
 });

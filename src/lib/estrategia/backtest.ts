@@ -2,7 +2,7 @@ import "server-only";
 import type { AssetStats } from "@/lib/analise/types";
 import { buildAsset, fetchChart } from "@/lib/bolsa/server";
 import type { BolsaAsset, Candle } from "@/lib/bolsa/types";
-import { DEFAULT_UNIVERSE } from "@/lib/bolsa/universe";
+import { CORE_ETFS, MOMENTUM_UNIVERSE } from "@/lib/bolsa/universe";
 import type { Perfil } from "@/lib/perfil";
 import { pickBolsa } from "@/lib/picks";
 import { cached } from "@/lib/server/cache";
@@ -12,19 +12,25 @@ import { DEFAULT_BOLSA_SETTINGS } from "@/lib/score/types";
 import { annualVol, mean, simpleReturns } from "@/lib/stats";
 
 /**
- * Testa no passado a regra que o app usa para escolher onde investir, contra alternativas.
- * A cada semana (ou mês): olha só os dados até aquele dia, escolhe N ativos, segura pelo prazo, mede.
- * Sem olhar o futuro: cada decisão usa apenas candles anteriores à data.
+ * Testa no passado as regras de escolha, contra alternativas.
+ * - Tudo comprável pelo Brasil e em reais: ações da B3, BDRs (ações americanas) e ETFs.
+ * - Preços ajustados por dividendos (retorno total).
+ * - Sem olhar o futuro: cada decisão usa só candles até a data.
+ * - Desde 2010, com cerca de 80 ativos. Resultado separado em duas metades: uma regra boa
+ *   tem que funcionar nas duas, não só no período em que foi escolhida.
  */
+
+export { CORE_ETFS };
 
 type Series = { symbol: string; candles: Candle[]; currency: string };
 
-const DAY = 86_400_000;
+const START = Date.UTC(2010, 0, 4) / 1000;
+const MIN_HISTORY = 260;
 
 async function load(symbol: string): Promise<Series> {
-  const r = await cached(`bt:hist:${symbol}`, 6 * 60 * 60_000, async () => {
-    const { meta, candles } = await fetchChart(symbol, "5y", "1d");
-    return { symbol, candles, currency: meta.currency ?? "" };
+  const r = await cached(`bt:hist:since:${symbol}`, 12 * 60 * 60_000, async () => {
+    const { meta, candles } = await fetchChart(symbol, `since:${START - 400 * 86400}`, "1d", { adjusted: true });
+    return { symbol, candles: candles.filter((c) => c.time >= START - 400 * 86400 && c.close > 0), currency: meta.currency ?? "" };
   });
   return r.value;
 }
@@ -42,31 +48,45 @@ function idxAt(c: Candle[], tSec: number) {
   return ans;
 }
 
-/** Recria o que o app "via" naquele dia: indicadores e estatísticas de 1 ano só com o passado. */
-function stateAt(s: Series, i: number): { a: BolsaAsset; st: AssetStats } | null {
-  if (i < 260) return null;
-  const window = s.candles.slice(i - 259, i + 1);
-  const last = window[window.length - 1];
-  const a = buildAsset(
-    s.symbol,
-    { symbol: s.symbol, currency: s.currency, regularMarketPrice: last.close, regularMarketTime: last.time } as Parameters<typeof buildAsset>[1],
-    window,
-  );
+interface State {
+  s: Series;
+  i: number;
+  mom: number;
+  vol: number | null;
+  retRisk: number | null;
+  /** Indicadores do app naquele dia (calculados só se alguma estratégia pedir). */
+  asset: () => BolsaAsset;
+}
+
+function stateAt(s: Series, i: number): State | null {
+  if (i < MIN_HISTORY) return null;
   const closes = s.candles.slice(i - 252, i + 1).map((c) => c.close);
   const r = simpleReturns(closes);
   const vol = annualVol(r);
-  const st = {
-    symbol: s.symbol,
-    vol1y: vol,
-    retRisk1y: vol ? (mean(r) * 252) / vol : null,
-    ret1y: closes[closes.length - 1] / closes[0] - 1,
+  let a: BolsaAsset | null = null;
+  return {
+    s,
+    i,
     // momento 12-1: retorno de 12 meses ignorando o último mês
     mom: s.candles[i - 21].close / s.candles[i - 252].close - 1,
-  } as unknown as AssetStats & { mom: number };
-  return { a, st };
+    vol,
+    retRisk: vol ? (mean(r) * 252) / vol : null,
+    asset: () => {
+      if (!a) {
+        const window = s.candles.slice(i - 259, i + 1);
+        const last = window[window.length - 1];
+        a = buildAsset(
+          s.symbol,
+          { symbol: s.symbol, currency: s.currency, regularMarketPrice: last.close, regularMarketTime: last.time } as Parameters<typeof buildAsset>[1],
+          window,
+        );
+      }
+      return a;
+    },
+  };
 }
 
-/** Retorno de segurar do fechamento de i até o último fechamento ≤ tEnd; com stop, sai na mínima que tocar. */
+/** Retorno de segurar do fechamento de i até o último fechamento ≤ tEnd; com stop, sai quando tocar. */
 function hold(s: Series, i: number, tEndSec: number, stop: number | null) {
   const entry = s.candles[i].close;
   const j = idxAt(s.candles, tEndSec);
@@ -98,29 +118,31 @@ export interface StrategyResult {
   best: number;
   /** % médio da carteira trocado a cada período. */
   turnover: number;
-  /** Retorno total descontando 0,1% de custo a cada troca. */
+  /** Retorno total descontando 0,1% de custo a cada compra e venda. */
   totalAfterCosts: number;
+  /** Retorno ao ano na 1ª e na 2ª metade do período. */
+  cagrA: number;
+  cagrB: number;
   equity: { t: number; v: number }[];
   lastPicks: string[];
 }
+
+type Item = { s: Series; w: number; stop: number | null };
 
 interface Strategy {
   key: string;
   label: string;
   desc: string;
-  /** Recebe só ações/cripto (sem ETFs) e devolve a escolha com pesos iguais. */
-  pick?: (states: State[]) => Series[];
-  /** Escolha com pesos e stop por item (para misturar ETFs com ações). */
-  weighted?: (stocks: State[], etfs: State[]) => { s: Series; w: number; stop: number | null }[];
-  stop?: number | null;
+  pick: (stocks: State[], etfs: State[]) => Item[];
 }
 
-type State = { s: Series; i: number; a: BolsaAsset; st: AssetStats & { mom: number } };
+const cagrOf = (rs: number[], ppy: number) => {
+  if (!rs.length) return 0;
+  const v = rs.reduce((acc, r) => acc * (1 + r), 1);
+  return v ** (ppy / rs.length) - 1;
+};
 
-/** ETFs que formam o "núcleo": o mercado brasileiro e o americano inteiros. */
-export const CORE_ETFS = ["BOVA11.SA", "IVVB11.SA"];
-
-function summarize(key: string, label: string, desc: string, rets: { t: number; r: number; picks: string[] }[], periodsPerYear: number): StrategyResult {
+function summarize(st: Strategy, rets: { t: number; r: number; picks: string[] }[], ppy: number): StrategyResult {
   let v = 1;
   let peak = 1;
   let maxDD = 0;
@@ -139,14 +161,15 @@ function summarize(key: string, label: string, desc: string, rets: { t: number; 
     prev = x.picks;
   }
   const rs = rets.map((x) => x.r);
-  const years = rets.length / periodsPerYear;
-  const sd = Math.sqrt(rs.reduce((s, r) => s + (r - mean(rs)) ** 2, 0) / Math.max(1, rs.length - 1));
-  const vol = sd * Math.sqrt(periodsPerYear);
-  const cagr = years > 0 ? v ** (1 / years) - 1 : 0;
+  const m = mean(rs);
+  const sd = Math.sqrt(rs.reduce((s, r) => s + (r - m) ** 2, 0) / Math.max(1, rs.length - 1));
+  const vol = sd * Math.sqrt(ppy);
+  const cagr = cagrOf(rs, ppy);
+  const half = Math.floor(rs.length / 2);
   return {
-    key,
-    label,
-    desc,
+    key: st.key,
+    label: st.label,
+    desc: st.desc,
     periods: rets.length,
     total: v - 1,
     cagr,
@@ -154,11 +177,13 @@ function summarize(key: string, label: string, desc: string, rets: { t: number; 
     retRisk: vol ? cagr / vol : 0,
     maxDD,
     winRate: rs.filter((r) => r > 0).length / Math.max(1, rs.length),
-    avg: mean(rs),
+    avg: m,
     worst: Math.min(...rs),
     best: Math.max(...rs),
     turnover: turnSum / Math.max(1, rets.length),
     totalAfterCosts: vc - 1,
+    cagrA: cagrOf(rs.slice(0, half), ppy),
+    cagrB: cagrOf(rs.slice(half), ppy),
     equity,
     lastPicks: rets.at(-1)?.picks ?? [],
   };
@@ -167,6 +192,8 @@ function summarize(key: string, label: string, desc: string, rets: { t: number; 
 export interface BacktestResult {
   from: number;
   to: number;
+  /** Data que divide as duas metades. */
+  splitAt: number;
   n: number;
   periodDays: number;
   perfil: Perfil;
@@ -176,98 +203,129 @@ export interface BacktestResult {
 }
 
 export function runBacktest(perfil: Perfil, n: number, periodDays: 7 | 28) {
-  return cached(`bt:run:v3:${perfil}:${n}:${periodDays}`, 6 * 60 * 60_000, async (): Promise<BacktestResult> => {
-    const investable = DEFAULT_UNIVERSE.filter((u) => !u.symbol.startsWith("^") && !u.symbol.endsWith("=X")).map((u) => u.symbol);
-    const all = [...investable, "^BVSP", "^GSPC"];
+  return cached(`bt:run:v8:${perfil}:${n}:${periodDays}`, 12 * 60 * 60_000, async (): Promise<BacktestResult> => {
+    const symbols = [...MOMENTUM_UNIVERSE, ...CORE_ETFS];
+    const benches = ["^BVSP", "^GSPC"];
+    const all = [...symbols, ...benches];
     const loaded = await mapLimit(all, 6, load);
     const series = new Map<string, Series>();
-    loaded.forEach((r, k) => r.status === "fulfilled" && series.set(all[k], r.value));
-    const inv = investable.map((s) => series.get(s)).filter((s): s is Series => !!s && s.candles.length > 300);
+    loaded.forEach((r, k) => r.status === "fulfilled" && r.value.candles.length > MIN_HISTORY && series.set(all[k], r.value));
+    const inv = symbols.map((s) => series.get(s)).filter((s): s is Series => !!s);
 
-    const start = Math.max(...inv.map((s) => s.candles[260]?.time ?? Infinity).filter(Number.isFinite));
-    const end = Math.min(...inv.map((s) => s.candles[s.candles.length - 1].time));
-    // Sextas-feiras (ou a cada 28 dias): datas de decisão.
+    const end = Math.max(...inv.map((s) => s.candles[s.candles.length - 1].time)) - 2 * 86400;
+    const step = periodDays * 86400;
     const dates: number[] = [];
-    for (let t = start + 3 * DAY / 1000; t + periodDays * 86400 <= end; t += periodDays * 86400) dates.push(t);
+    for (let t = START; t + step <= end; t += step) dates.push(t);
 
-    const perPerfil = (p: Perfil) => (states: State[]) => {
+    // Situação de cada ativo em cada data (só com o passado).
+    const snapshots = dates.map((t) => {
+      const states = inv
+        .map((s) => {
+          const i = idxAt(s.candles, t);
+          return i >= 0 && t - s.candles[i].time < 5 * 86400 ? stateAt(s, i) : null;
+        })
+        .filter((x): x is State => !!x);
+      return {
+        t,
+        etfs: states.filter((x) => CORE_ETFS.includes(x.s.symbol)),
+        stocks: states.filter((x) => !CORE_ETFS.includes(x.s.symbol)),
+      };
+    });
+
+    const eq = (list: State[], stop: number | null = null): Item[] => list.map((x) => ({ s: x.s, w: 1 / list.length, stop }));
+    const top = (list: State[], f: (x: State) => number, asc = false) => [...list].sort((a, b) => (asc ? f(a) - f(b) : f(b) - f(a))).slice(0, n);
+    const appPick = (stocks: State[]) => {
+      const byAsset = new Map(stocks.map((x) => [x.s.symbol, x]));
       const { best } = pickBolsa(
-        states.map((x) => x.a),
-        states.map((x) => x.st),
-        p,
+        stocks.map((x) => x.asset()),
+        stocks.map((x) => ({ symbol: x.s.symbol, vol1y: x.vol, retRisk1y: x.retRisk }) as unknown as AssetStats),
+        perfil,
         DEFAULT_BOLSA_SETTINGS,
         { n, investableOnly: true },
       );
-      return best.map((b) => states.find((x) => x.a.symbol === b.a.symbol)!.s);
+      return best.map((b) => byAsset.get(b.a.symbol)!);
     };
-    const topBy = (f: (x: State) => number, asc = false) => (states: State[]) =>
-      [...states].sort((x, y) => (asc ? f(x) - f(y) : f(y) - f(x))).slice(0, n).map((x) => x.s);
-    const momTop = topBy((x) => x.st.mom);
-    /** Regra nova: metade no núcleo (ETFs), metade nos n com mais momento. */
-    const nova = (stop: number | null) => (stocks: State[], etfs: State[]) => {
-      const m = momTop(stocks);
-      const core = etfs.length ? etfs : [];
-      const wCore = core.length ? 0.5 / core.length : 0;
-      const wMom = (core.length ? 0.5 : 1) / Math.max(1, m.length);
-      return [...core.map((e) => ({ s: e.s, w: wCore, stop: null })), ...m.map((s) => ({ s, w: wMom, stop }))];
+    /** Núcleo + momento (versão de ontem). */
+    const nucleoMom = (stocks: State[], etfs: State[]): Item[] => {
+      const m = top(stocks, (x) => x.mom);
+      if (!etfs.length) return eq(m);
+      return [...etfs.map((e) => ({ s: e.s, w: 0.5 / etfs.length, stop: null })), ...m.map((x) => ({ s: x.s, w: 0.5 / m.length, stop: null }))];
+    };
+    /** Regra adotada: 1/3 núcleo, 1/3 momento, 1/3 baixa volatilidade. */
+    const tresPartes = (stop: number | null) => (stocks: State[], etfs: State[]): Item[] => {
+      const part = etfs.length ? 1 / 3 : 0.5;
+      return [
+        ...etfs.map((x) => ({ s: x.s, w: part / etfs.length, stop: null })),
+        ...top(stocks, (x) => x.mom).map((x) => ({ s: x.s, w: part / n, stop })),
+        ...top(stocks, (x) => x.vol ?? 9, true).map((x) => ({ s: x.s, w: part / n, stop })),
+      ];
     };
 
     const strategies: Strategy[] = [
-      { key: "app", label: `Regra do app (perfil ${perfil})`, desc: "O que a carteira automática faz hoje: maior score + retorno por risco, dentro do perfil.", pick: perPerfil(perfil) },
-      { key: "app-stop", label: "Regra do app + stop 8%", desc: "Igual, saindo se cair 8% dentro do período.", pick: perPerfil(perfil), stop: 0.08 },
-      { key: "todos", label: "Comprar todos (pesos iguais)", desc: "Divide igualmente entre todos os ativos da lista. É o “não escolher”.", pick: (st) => st.map((x) => x.s) },
-      { key: "momento", label: "Momento 12-1", desc: "Os que mais subiram em 12 meses (ignorando o último mês). Estratégia clássica e bem estudada.", pick: topBy((x) => x.st.mom) },
-      { key: "baixavol", label: "Baixa volatilidade", desc: "Os que menos oscilaram no último ano. Outra estratégia clássica.", pick: topBy((x) => x.st.vol1y ?? 9, true) },
-      { key: "piores", label: "Contrário: menor score", desc: "Os piores pelo score do app. Se o score funciona, este deve ir mal.", pick: topBy((x) => scoreOf(x.a), true) },
       {
-        key: "nucleo",
-        label: "Núcleo: BOVA11 + IVVB11",
-        desc: "Metade no ETF do Ibovespa, metade no ETF do S&P 500 em reais. O mercado inteiro, sem escolher ações.",
-        weighted: (_s, etfs) => etfs.map((e) => ({ s: e.s, w: 1 / etfs.length, stop: null })),
+        key: "nova",
+        label: "Regra nova: núcleo + momento + baixa volatilidade",
+        desc: "Um terço nos ETFs do núcleo, um terço nas 4 com mais momento, um terço nas 4 que menos oscilam. É a regra da carteira automática.",
+        pick: tresPartes(null),
       },
-      { key: "nova", label: "Regra nova: núcleo + momento", desc: "50% nos dois ETFs e 50% nas 4 ações com mais momento (12-1).", weighted: nova(null) },
-      { key: "nova-stop", label: "Regra nova + stop 15% nas ações", desc: "Igual, com stop largo de 15% só na parte de ações.", weighted: nova(0.15) },
+      { key: "nova-stop", label: "Regra nova + stop 15% nas ações", desc: "Igual, com stop de 15% na parte de ações.", pick: tresPartes(0.15) },
+      { key: "nucleo-mom", label: "Núcleo + momento (versão anterior)", desc: "50% nos ETFs do núcleo e 50% nas 4 com mais momento.", pick: nucleoMom },
+      {
+        key: "fatores",
+        label: "Momento + baixa volatilidade (sem núcleo)",
+        desc: "Metade nas 4 com mais momento, metade nas 4 que menos oscilam. Rende mais no papel, mas depende só de ações da lista (mais viés).",
+        pick: (s) => [...top(s, (x) => x.mom).map((x) => ({ s: x.s, w: 0.5 / n, stop: null })), ...top(s, (x) => x.vol ?? 9, true).map((x) => ({ s: x.s, w: 0.5 / n, stop: null }))],
+      },
+      { key: "app", label: "Regra antiga (score do app)", desc: "Maior score + retorno por risco. Era o que a carteira automática fazia.", pick: (s) => eq(appPick(s)) },
+      { key: "app-stop", label: "Regra antiga + stop 8%", desc: "Igual, saindo se cair 8% dentro do período.", pick: (s) => eq(appPick(s), 0.08) },
+      { key: "momento", label: "Momento 12-1", desc: "As que mais subiram em 12 meses, ignorando o último mês.", pick: (s) => eq(top(s, (x) => x.mom)) },
+      { key: "baixavol", label: "Baixa volatilidade", desc: "As que menos oscilaram no último ano.", pick: (s) => eq(top(s, (x) => x.vol ?? 9, true)) },
+      { key: "todos", label: "Comprar todos (pesos iguais)", desc: "Divide igualmente entre todas as ações disponíveis. É o “não escolher”.", pick: (s) => eq(s) },
+      { key: "piores", label: "Contrário: menor score", desc: "As piores pelo score do app. Se o score funciona, esta deve ir mal.", pick: (s) => eq(top(s, (x) => scoreBolsa(x.asset(), DEFAULT_BOLSA_SETTINGS).score, true)) },
+      { key: "nucleo", label: "Núcleo: BOVA11 + IVVB11", desc: "Os ETFs do Ibovespa e do S&P 500 em reais, em partes iguais (até 2014 só BOVA11).", pick: (_s, e) => eq(e) },
     ];
 
+    const ppy = 365 / periodDays;
     const out: StrategyResult[] = [];
-    for (const strat of strategies) {
+    for (const st of strategies) {
       const rets: { t: number; r: number; picks: string[] }[] = [];
-      for (const t of dates) {
-        const states = inv
-          .map((s) => {
-            const i = idxAt(s.candles, t);
-            const x = i >= 0 && t - s.candles[i].time < 5 * 86400 ? stateAt(s, i) : null;
-            return x ? { s, i, a: x.a, st: x.st as AssetStats & { mom: number } } : null;
-          })
-          .filter((x): x is NonNullable<typeof x> => !!x);
-        const etfs = states.filter((x) => CORE_ETFS.includes(x.s.symbol));
-        const stocks = states.filter((x) => !CORE_ETFS.includes(x.s.symbol));
-        if (stocks.length < n) continue;
-        const items = strat.weighted
-          ? strat.weighted(stocks, etfs)
-          : (strat.pick!(stocks).map((s, _k, arr) => ({ s, w: 1 / arr.length, stop: strat.stop ?? null })) as { s: Series; w: number; stop: number | null }[]);
+      for (const snap of snapshots) {
+        if (snap.stocks.length < Math.max(n, 15)) continue;
+        const items = st.pick(snap.stocks, snap.etfs);
         if (!items.length) {
-          rets.push({ t: t * 1000, r: 0, picks: [] });
+          rets.push({ t: snap.t * 1000, r: 0, picks: [] });
           continue;
         }
-        const r = items.reduce((acc, it) => acc + it.w * hold(it.s, states.find((x) => x.s === it.s)!.i, t + periodDays * 86400, it.stop), 0);
-        rets.push({ t: t * 1000, r, picks: items.map((it) => it.s.symbol) });
+        const idx = new Map([...snap.stocks, ...snap.etfs].map((x) => [x.s, x.i]));
+        const r = items.reduce((acc, it) => acc + it.w * hold(it.s, idx.get(it.s)!, snap.t + periodDays * 86400, it.stop), 0);
+        rets.push({ t: snap.t * 1000, r, picks: items.map((it) => it.s.symbol) });
       }
-      out.push(summarize(strat.key, strat.label, strat.desc, rets, 365 / periodDays));
+      out.push(summarize(st, rets, ppy));
     }
 
-    for (const [sym, label] of [["^BVSP", "Ibovespa (comprar e segurar)"], ["^GSPC", "S&P 500 (comprar e segurar)"]] as const) {
+    const used = out[0]?.equity ?? [];
+    for (const [sym, label] of [["^BVSP", "Ibovespa (índice)"], ["^GSPC", "S&P 500 (em dólar)"]] as const) {
       const s = series.get(sym);
       if (!s) continue;
-      const rets = dates.map((t) => {
-        const i = idxAt(s.candles, t);
-        return { t: t * 1000, r: i >= 0 ? hold(s, i, t + periodDays * 86400, null) : 0, picks: [sym] };
+      const rets = used.map(({ t }) => {
+        const i = idxAt(s.candles, t / 1000);
+        return { t, r: i >= 0 ? hold(s, i, t / 1000 + periodDays * 86400, null) : 0, picks: [sym] };
       });
-      out.push(summarize(sym, label, "Referência: o índice inteiro, sem escolher nada.", rets, 365 / periodDays));
+      out.push(summarize({ key: sym, label, desc: "Referência: o índice inteiro, sem escolher nada.", pick: () => [] }, rets, ppy));
     }
 
-    return { from: dates[0] * 1000, to: dates[dates.length - 1] * 1000, n, periodDays, perfil, strategies: out, universe: inv.map((s) => s.symbol), at: Date.now() };
+    const from = used[0]?.t ?? START * 1000;
+    const to = used.at(-1)?.t ?? end * 1000;
+    return {
+      from,
+      to,
+      splitAt: used[Math.floor(used.length / 2)]?.t ?? from,
+      n,
+      periodDays,
+      perfil,
+      strategies: out,
+      universe: inv.map((s) => s.symbol),
+      at: Date.now(),
+    };
   });
 }
-
-const scoreOf = (a: BolsaAsset) => scoreBolsa(a, DEFAULT_BOLSA_SETTINGS).score;

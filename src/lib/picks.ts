@@ -50,3 +50,18 @@ export function pickPoly(markets: PolyMarket[], settings: PolySettings, n = 4, n
     .sort((a, b) => (b.s.status === "destaque" ? 1 : 0) - (a.s.status === "destaque" ? 1 : 0) || b.s.score - a.s.score)
     .slice(0, n);
 }
+
+/**
+ * Regra nova (testada em 16 anos): 1/3 núcleo (BOVA11 + IVVB11), 1/3 nas `n` com mais momento 12-1,
+ * 1/3 nas `n` que menos oscilam. Recebe as estatísticas da análise (preços com dividendos).
+ */
+export function pickRegraNova(stats: AssetStats[], universe: string[], core: string[], n = 4) {
+  const stocks = stats.filter((s) => universe.includes(s.symbol) && s.ret1y !== null && s.ret1m !== null && s.vol1y !== null);
+  const momentum = stocks
+    .map((s) => ({ s, mom: (1 + s.ret1y!) / (1 + s.ret1m!) - 1 }))
+    .sort((a, b) => b.mom - a.mom)
+    .slice(0, n);
+  const lowVol = [...stocks].sort((a, b) => a.vol1y! - b.vol1y!).slice(0, n);
+  const coreStats = stats.filter((s) => core.includes(s.symbol));
+  return { core: coreStats, momentum, lowVol };
+}

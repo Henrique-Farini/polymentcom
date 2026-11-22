@@ -54,8 +54,8 @@ interface History {
 const day = (t: number) => new Date(t * 1000).toISOString().slice(0, 10);
 
 async function history(symbol: string): Promise<History> {
-  const r = await cached(`analise:hist:${symbol}`, 60 * 60_000, async () => {
-    const { meta, candles } = await fetchChart(symbol, "5y", "1d");
+  const r = await cached(`analise:hist:adj:${symbol}`, 60 * 60_000, async () => {
+    const { meta, candles } = await fetchChart(symbol, "5y", "1d", { adjusted: true });
     const known = DEFAULT_UNIVERSE.find((u) => u.symbol === symbol);
     const series = candles.map((c) => ({ day: day(c.time), close: c.close }));
     // O último candle diário pode estar atrasado; usa o preço atual.
@@ -170,7 +170,7 @@ function backtest(histories: History[]) {
 }
 
 export function getBolsaAnalysis(symbols: string[]) {
-  const list = (symbols.length ? symbols : DEFAULT_UNIVERSE.map((u) => u.symbol)).slice(0, 60);
+  const list = (symbols.length ? symbols : DEFAULT_UNIVERSE.map((u) => u.symbol)).slice(0, 120);
   const key = `analise:bolsa:${[...list].sort().join(",")}`;
   return cached(key, 30 * 60_000, async (): Promise<BolsaAnalysis> => {
     const wanted = [...new Set([...list, "^BVSP", "^GSPC"])];

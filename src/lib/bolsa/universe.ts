@@ -41,6 +41,51 @@ export const DEFAULT_UNIVERSE: UniverseItem[] = [
   { symbol: "ETH-USD", name: "Ethereum", market: "Cripto/Câmbio" },
 ];
 
+/**
+ * Como comprar pelo Brasil: ações americanas viram BDRs na B3 e cripto vira ETF na B3.
+ * Preço em reais (já inclui o dólar), comprável em qualquer corretora brasileira.
+ */
+export const B3_EQUIVALENT: Record<string, { symbol: string; note: string }> = {
+  AAPL: { symbol: "AAPL34.SA", note: "BDR da Apple" },
+  MSFT: { symbol: "MSFT34.SA", note: "BDR da Microsoft" },
+  NVDA: { symbol: "NVDC34.SA", note: "BDR da Nvidia" },
+  TSLA: { symbol: "TSLA34.SA", note: "BDR da Tesla" },
+  AMZN: { symbol: "AMZO34.SA", note: "BDR da Amazon" },
+  GOOGL: { symbol: "GOGL34.SA", note: "BDR da Alphabet" },
+  META: { symbol: "M1TA34.SA", note: "BDR da Meta" },
+  AMD: { symbol: "A1MD34.SA", note: "BDR da AMD" },
+  NFLX: { symbol: "NFLX34.SA", note: "BDR da Netflix" },
+  JPM: { symbol: "JPMC34.SA", note: "BDR do JPMorgan" },
+  "BTC-USD": { symbol: "QBTC11.SA", note: "ETF de Bitcoin na B3" },
+  "ETH-USD": { symbol: "QETH11.SA", note: "ETF de Ethereum na B3" },
+};
+
+/** Código que se compra de verdade numa corretora brasileira. */
+export function execSymbol(symbol: string) {
+  return B3_EQUIVALENT[symbol]?.symbol ?? symbol;
+}
+
+/** Ações do Ibovespa usadas no teste longo e na parte de momento (além das da lista padrão). */
+const IBOV_EXTRA = [
+  "ITSA4", "BPAC11", "SANB11", "BBSE3", "CMIG4", "CPLE3", "EQTL3", "SBSP3", "GGBR4", "CSNA3", "USIM5", "CMIN3",
+  "RAIL3", "MOTV3", "EMBJ3", "JBSS32", "MBRF3", "RADL3", "LREN3", "HYPE3", "TOTS3", "VIVT3", "TIMS3", "KLBN11",
+  "CSAN3", "UGPA3", "VBBR3", "RDOR3", "HAPV3", "CPFE3", "ENGI11", "EGIE3", "TAEE11", "SAPR11", "CYRE3", "MULT3",
+  "ASAI3", "NATU3", "BRAP4", "GOAU4", "CXSE3", "PSSA3", "IRBR3", "ALOS3", "SMTO3", "SLCE3", "RECV3", "BEEF3",
+  "COGN3", "YDUQ3", "ENEV3", "EZTC3", "MRVE3", "AURE3", "DIRR3", "VAMO3", "BRAV3", "POMO4", "CVCB3", "FLRY3",
+].map((s) => `${s}.SA`);
+
+/** Tudo que a regra de momento pode comprar pelo Brasil: ações da B3, BDRs e ETFs de cripto. */
+export const MOMENTUM_UNIVERSE: string[] = [
+  ...new Set([
+    ...DEFAULT_UNIVERSE.filter((u) => u.symbol.endsWith(".SA") && u.market === "B3").map((u) => u.symbol),
+    ...IBOV_EXTRA,
+    ...Object.values(B3_EQUIVALENT).map((e) => e.symbol),
+  ]),
+];
+
+/** ETFs do núcleo: o mercado brasileiro e o americano inteiros. */
+export const CORE_ETFS = ["BOVA11.SA", "IVVB11.SA"];
+
 export function guessMarket(symbol: string): BolsaMarket {
   if (symbol.endsWith(".SA")) return "B3";
   if (symbol.startsWith("^")) return "Índices";

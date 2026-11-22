@@ -39,6 +39,12 @@ export interface Position {
   exitReason?: ExitReason;
   /** Resultado final em reais. */
   pnlBRL?: number;
+  /** Dividendos recebidos enquanto a posição estava aberta, em reais. */
+  divBRL?: number;
+  /** Datas ex (segundos) dos dividendos já creditados. */
+  divPaid?: number[];
+  /** Na B3 só se compra ação inteira (mercado fracionário: mínimo 1 ação). */
+  wholeShares?: boolean;
 }
 
 export interface CarteiraEvent {

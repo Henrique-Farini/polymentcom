@@ -34,33 +34,58 @@ interface YahooChart {
           close: (number | null)[];
           volume: (number | null)[];
         }[];
+        adjclose?: { adjclose: (number | null)[] }[];
       };
+      events?: { dividends?: Record<string, { amount: number; date: number }> };
     }[];
     error?: { description?: string } | null;
   };
 }
 
-export async function fetchChart(symbol: string, range: string, interval: string) {
+export interface Dividend {
+  /** Data ex (segundos). */
+  date: number;
+  /** Valor por ação, na moeda do ativo. */
+  amount: number;
+}
+
+/**
+ * Busca os candles no Yahoo.
+ * `adjusted: true` devolve preços ajustados por dividendos e desdobramentos (retorno total):
+ * quem segurou a ação recebeu os dividendos, então o retorno conta com eles.
+ */
+export async function fetchChart(symbol: string, range: string, interval: string, opts: { adjusted?: boolean } = {}) {
   const data = await getJson<YahooChart>(
-    `${YAHOO}/${encodeURIComponent(symbol)}?range=${range}&interval=${interval}&includePrePost=false`,
+    `${YAHOO}/${encodeURIComponent(symbol)}?${range.startsWith("since:") ? `period1=${range.slice(6)}&period2=${Math.floor(Date.now() / 1000)}` : `range=${range}`}&interval=${interval}&includePrePost=false&events=div%2Csplits`,
   );
   const result = data.chart.result?.[0];
   if (!result) throw new Error(data.chart.error?.description ?? `Sem dados para ${symbol}`);
   const q = result.indicators.quote[0];
+  const adj = opts.adjusted ? result.indicators.adjclose?.[0]?.adjclose : undefined;
   const candles: Candle[] = [];
   (result.timestamp ?? []).forEach((t, i) => {
     const c = q.close[i];
     if (c == null) return;
+    const k = adj && adj[i] != null && c > 0 ? adj[i]! / c : 1;
     candles.push({
       time: t,
-      open: q.open[i] ?? c,
-      high: q.high[i] ?? c,
-      low: q.low[i] ?? c,
-      close: c,
+      open: (q.open[i] ?? c) * k,
+      high: (q.high[i] ?? c) * k,
+      low: (q.low[i] ?? c) * k,
+      close: c * k,
       volume: q.volume[i] ?? 0,
     });
   });
-  return { meta: result.meta, candles };
+  const dividends: Dividend[] = Object.values(result.events?.dividends ?? {})
+    .map((d) => ({ date: d.date, amount: d.amount }))
+    .sort((a, b) => a.date - b.date);
+  return { meta: result.meta, candles, dividends };
+}
+
+/** Dividendos recentes de um ativo (para creditar na carteira de teste). */
+export async function getDividends(symbol: string) {
+  const r = await cached(`bolsa:divs:${symbol}`, 60 * 60_000, async () => (await fetchChart(symbol, "3mo", "1d")).dividends);
+  return r.value;
 }
 
 export function buildAsset(

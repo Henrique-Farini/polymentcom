@@ -29,7 +29,7 @@ export function positionValue(p: Position): number {
 export function positionPnl(p: Position): number {
   if (p.status === "fechada") return p.pnlBRL ?? 0;
   if (p.status === "pendente") return 0;
-  return positionValue(p) - p.amountBRL;
+  return positionValue(p) + (p.divBRL ?? 0) - p.amountBRL;
 }
 
 export function totalValue(c: Carteira): number {
@@ -39,7 +39,7 @@ export function totalValue(c: Carteira): number {
 /** Reserva o dinheiro e cria a ordem. A compra acontece na próxima leitura de preço. */
 export function placeOrder(
   c: Carteira,
-  o: Pick<Position, "area" | "ref" | "label" | "sub" | "currency" | "amountBRL" | "stopPct" | "holdDays">,
+  o: Pick<Position, "area" | "ref" | "label" | "sub" | "currency" | "amountBRL" | "stopPct" | "holdDays" | "wholeShares">,
   now = Date.now(),
 ): Position {
   if (!(o.amountBRL > 0)) throw new Error("Valor precisa ser maior que zero");
@@ -63,7 +63,7 @@ function close(c: Carteira, p: Position, price: number, reason: Position["exitRe
   p.lastPrice = price;
   const fx = p.currency === "USD" ? p.fxLast ?? p.fxEntry ?? 1 : 1;
   const value = (p.qty ?? 0) * price * fx;
-  p.pnlBRL = value - p.amountBRL;
+  p.pnlBRL = value + (p.divBRL ?? 0) - p.amountBRL;
   c.cash += value;
   const ret = p.pnlBRL / p.amountBRL;
   const why =
@@ -103,11 +103,30 @@ export function applyQuote(c: Carteira, p: Position, q: Quote, fx: number, now =
       return;
     }
     if (q.time <= p.createdAt || !(q.price > 0)) return;
+    const unitBRL = (p.currency === "USD" ? fx : 1) * q.price;
+    let qty = p.amountBRL / unitBRL;
+    if (p.wholeShares) {
+      // Como na B3: compra só ações inteiras; o troco volta para o caixa.
+      qty = Math.floor(qty + 1e-9);
+      if (qty < 1) {
+        p.status = "fechada";
+        p.closedAt = now;
+        p.exitReason = "manual";
+        p.pnlBRL = 0;
+        p.qty = 0;
+        c.cash += p.amountBRL;
+        log(c, { t: now, kind: "info", text: `Ordem de ${p.label} cancelada: ${brl(p.amountBRL)} não compra nem 1 ação (custa ${brl(unitBRL)}).` });
+        return;
+      }
+      const spent = qty * unitBRL;
+      c.cash += p.amountBRL - spent;
+      p.amountBRL = spent;
+    }
     p.status = "aberta";
     p.filledAt = now;
     p.entryPrice = q.price;
     p.fxEntry = fx;
-    p.qty = p.amountBRL / ((p.currency === "USD" ? fx : 1) * q.price);
+    p.qty = qty;
     p.exitAt = now + p.holdDays * DAY;
     p.lastPrice = q.price;
     p.lastAt = q.time;
@@ -116,7 +135,7 @@ export function applyQuote(c: Carteira, p: Position, q: Quote, fx: number, now =
     log(c, {
       t: now,
       kind: "compra",
-      text: `Comprou ${p.label} a ${fmtPrice(q.price, p)} com ${brl(p.amountBRL)}${p.stopPct ? `, stop em ${fmtPrice(q.price * (1 - p.stopPct), p)}` : ""}.`,
+      text: `Comprou ${p.wholeShares ? `${qty} un. de ` : ""}${p.label} a ${fmtPrice(q.price, p)} (${brl(p.amountBRL)})${p.stopPct ? `, stop em ${fmtPrice(q.price * (1 - p.stopPct), p)}` : ""}.`,
     });
     return;
   }
@@ -129,6 +148,21 @@ export function applyQuote(c: Carteira, p: Position, q: Quote, fx: number, now =
   if (q.resolved) return close(c, p, q.price, "resolvido", now);
   if (p.stopPct && p.entryPrice && q.price <= p.entryPrice * (1 - p.stopPct)) return close(c, p, q.price, "stop", now);
   if (p.exitAt && now >= p.exitAt) return close(c, p, q.price, "prazo", now);
+}
+
+/**
+ * Credita um dividendo se a posição já estava comprada antes da data ex.
+ * Valor bruto (juros sobre capital próprio têm 15% de IR na fonte; não descontado aqui).
+ */
+export function applyDividend(c: Carteira, p: Position, d: { date: number; amount: number }, fx: number, now = Date.now()) {
+  if (p.status !== "aberta" || !p.filledAt || !p.qty) return;
+  if (d.date * 1000 <= p.filledAt || d.date * 1000 > now) return;
+  if (p.divPaid?.includes(d.date)) return;
+  const value = p.qty * d.amount * (p.currency === "USD" ? fx : 1);
+  p.divPaid = [...(p.divPaid ?? []), d.date];
+  p.divBRL = (p.divBRL ?? 0) + value;
+  c.cash += value;
+  log(c, { t: now, kind: "info", text: `Recebeu ${brl(value)} de dividendos de ${p.label}.` });
 }
 
 export function closeManual(c: Carteira, id: string, now = Date.now()) {
@@ -196,6 +230,32 @@ export function editCarteira(c: Carteira, e: { dias?: number | null; deposito?: 
     c.startCash += e.deposito;
     log(c, { t: now, kind: "info", text: `Adicionou ${brl(e.deposito)} fictícios.` });
   }
+}
+
+/**
+ * Divide o dinheiro em ações inteiras perseguindo os pesos-alvo.
+ * Primeiro compra o que cabe em cada alvo; depois usa o troco comprando 1 ação por vez
+ * de quem está mais longe do alvo, enquanto couber (mesmo passando um pouco do alvo: com pouco dinheiro,
+ * uma ação cara como IVVB11 pode não caber e o dinheiro dela vai para as outras).
+ * `buffer` reserva margem para o preço subir até a compra.
+ */
+export function allocateWholeShares(targets: { key: string; price: number; weight: number }[], cash: number, buffer = 1.02) {
+  const valid = targets.filter((t) => t.price > 0 && t.weight > 0);
+  const wSum = valid.reduce((s, t) => s + t.weight, 0) || 1;
+  const unit = (t: (typeof valid)[number]) => t.price * buffer;
+  const shares = new Map(valid.map((t) => [t.key, Math.floor(((cash * t.weight) / wSum) / unit(t))]));
+  let left = cash - valid.reduce((s, t) => s + shares.get(t.key)! * unit(t), 0);
+  for (let guard = 0; guard < 10_000; guard++) {
+    const cands = valid
+      .filter((t) => unit(t) <= left + 1e-9)
+      .map((t) => ({ t, gap: (cash * t.weight) / wSum - shares.get(t.key)! * unit(t) }))
+      .sort((a, b) => b.gap - a.gap);
+    if (!cands.length) break;
+    const t = cands[0].t;
+    shares.set(t.key, shares.get(t.key)! + 1);
+    left -= unit(t);
+  }
+  return valid.map((t) => ({ key: t.key, shares: shares.get(t.key)!, amount: shares.get(t.key)! * unit(t) })).filter((x) => x.shares > 0);
 }
 
 /** Guarda um ponto do patrimônio no máximo a cada `everyMs`. */

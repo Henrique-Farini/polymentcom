@@ -8,11 +8,12 @@ import { Termo } from "@/components/Termo";
 import { Card } from "@/components/ui";
 import type { BolsaAnalysis, PolyAnalysis } from "@/lib/analise/types";
 import type { BolsaAsset } from "@/lib/bolsa/types";
-import { DEFAULT_UNIVERSE } from "@/lib/bolsa/universe";
+import { CORE_ETFS, DEFAULT_UNIVERSE, MOMENTUM_UNIVERSE, displaySymbol } from "@/lib/bolsa/universe";
 import { PERFIL_META, RISK_STYLE, riskLevel, useConta, type Perfil } from "@/lib/client/conta";
 import { usePolling } from "@/lib/client/hooks";
 import { useBolsaSettings, useBolsaUniverse, usePolySettings } from "@/lib/client/settings";
-import { pickBolsa, pickPoly, type BolsaPick as Pick } from "@/lib/picks";
+import type { AssetStats } from "@/lib/analise/types";
+import { pickBolsa, pickPoly, pickRegraNova } from "@/lib/picks";
 import { hoursToEnd } from "@/lib/score/polymarket";
 import type { ScoreResult } from "@/lib/score/types";
 import type { PolyMarket } from "@/lib/polymarket/types";
@@ -68,6 +69,15 @@ export default function ComecarPage() {
   const poly = usePolling<{ markets: PolyMarket[]; at: number }>("/api/polymarket/markets", 30_000);
   const calib = usePolling<PolyAnalysis>("/api/analise/polymarket", 60 * 60_000);
 
+  // Regra nova: as mesmas estatísticas que a carteira automática usa (ações da B3, BDRs e ETFs, com dividendos).
+  const regraSymbols = encodeURIComponent([...MOMENTUM_UNIVERSE, ...CORE_ETFS].join(","));
+  const regraStats = usePolling<BolsaAnalysis>(`/api/analise/bolsa?symbols=${regraSymbols}`, 30 * 60_000);
+  const regra = useMemo(
+    () => (regraStats.data ? pickRegraNova(regraStats.data.assets, MOMENTUM_UNIVERSE, CORE_ETFS, 4) : null),
+    [regraStats.data],
+  );
+
+  // Alertas de agora (o que evitar) continuam vindo do score ao vivo.
   const picks = useMemo(
     () => (live.data ? pickBolsa(live.data.assets, stats.data?.assets ?? null, perfil, bSettings) : null),
     [live.data, stats.data, perfil, bSettings],
@@ -78,18 +88,23 @@ export default function ComecarPage() {
   /* simulador */
   const options = useMemo(() => {
     const names = new Map(live.data?.assets.map((a) => [a.symbol, a]) ?? []);
-    return universe.map((s) => {
-      const a = names.get(s);
-      const u = DEFAULT_UNIVERSE.find((x) => x.symbol === s);
-      return { symbol: s, display: a?.display ?? s.replace(".SA", ""), name: a?.name ?? u?.name ?? s };
-    });
-  }, [universe, live.data]);
+    const fromRegra = regra ? [...regra.core, ...regra.momentum.map((m) => m.s), ...regra.lowVol] : [];
+    const list = [
+      ...fromRegra.map((s) => ({ symbol: s.symbol, display: displaySymbol(s.symbol), name: s.name })),
+      ...universe.map((s) => {
+        const a = names.get(s);
+        const u = DEFAULT_UNIVERSE.find((x) => x.symbol === s);
+        return { symbol: s, display: a?.display ?? s.replace(".SA", ""), name: a?.name ?? u?.name ?? s };
+      }),
+    ];
+    return list.filter((x, i) => list.findIndex((y) => y.symbol === x.symbol) === i);
+  }, [universe, live.data, regra]);
   const [simSymbol, setSimSymbol] = useState("");
   const simRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     // Começa pelo ativo mais forte do perfil (espera as cotações chegarem).
-    if (!simSymbol && picks) setSimSymbol(picks.best[0]?.a.symbol ?? options[0]?.symbol ?? "");
-  }, [picks, options, simSymbol]);
+    if (!simSymbol && regra) setSimSymbol(regra.momentum[0]?.s.symbol ?? options[0]?.symbol ?? "");
+  }, [regra, options, simSymbol]);
   const simular = (s: string) => {
     setSimSymbol(s);
     simRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -151,22 +166,35 @@ export default function ComecarPage() {
       <section>
         <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
           <h2 className="text-lg font-semibold">
-            <span className="text-up">▲</span> Bolsa: os mais fortes agora para o perfil {meta.label.toLowerCase()}
+            <span className="text-up">▲</span> Bolsa: onde a regra testada colocaria o dinheiro agora
           </h2>
-          <Link href="/bolsa/terminal" className="text-sm text-up hover:underline">Ver todos no Terminal →</Link>
+          <Link href="/analise?aba=estrategias" className="text-sm text-up hover:underline">Ver o teste de 16 anos →</Link>
         </div>
         <p className="mb-3 text-sm text-muted">
-          Escolhidos pelo <Termo k="score" /> de agora e pelo retorno em relação ao risco no último ano.{" "}
-          {perfil !== "arrojado" && <>Ficam de fora ativos com <Termo k="volatilidade" /> acima de {Math.round(meta.maxVol * 100)}% ao ano.</>}
+          Um terço em cada parte, revisando uma vez por mês. Foi a regra mais equilibrada quando testamos 16 anos de dados (sem <Termo k="stop" />, que piorou o resultado em
+          todos os testes). Tudo comprável numa corretora brasileira: ações americanas entram como BDR.
+          {perfil === "conservador" && " Para o perfil conservador, o núcleo sozinho já é um bom começo."}
         </p>
-        {!picks ? (
-          <p className="text-sm text-muted">Carregando cotações…</p>
-        ) : picks.best.length === 0 ? (
-          <Card className="p-4 text-sm text-muted">Nenhum ativo do seu perfil está com sinais bons agora. Às vezes a melhor decisão é esperar.</Card>
+        {!regra ? (
+          <p className="text-sm text-muted">Calculando com o histórico de mais de 80 ativos… (na primeira vez leva alguns segundos)</p>
         ) : (
-          <div className="focus-group grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {picks.best.map((p) => (
-              <BolsaCard key={p.a.symbol} p={p} valor={conta.valor || 1000} onSimular={() => simular(p.a.symbol)} />
+          <div className="grid gap-4 lg:grid-cols-3">
+            {[
+              { t: "Núcleo", d: "O mercado inteiro: Brasil e EUA. A base que segura as quedas.", items: regra.core.map((s) => ({ s, why: s.symbol.startsWith("BOVA") ? "As maiores empresas do Brasil" : "As 500 maiores dos EUA, em reais" })) },
+              { t: "Momento", d: "As que mais subiram em 12 meses (sem contar o último mês). Tendem a continuar, mas oscilam mais.", items: regra.momentum.map((m) => ({ s: m.s, why: `Subiu ${pc(m.mom)} em 12 meses` })) },
+              { t: "Baixa volatilidade", d: "As que menos oscilaram no último ano. Rendem com menos susto.", items: regra.lowVol.map((s) => ({ s, why: `Oscila ${Math.round((s.vol1y ?? 0) * 100)}% ao ano` })) },
+            ].map((g) => (
+              <div key={g.t}>
+                <div className="mb-2">
+                  <h3 className="font-semibold">{g.t} <span className="text-xs font-normal text-muted">· 1/3 do dinheiro</span></h3>
+                  <p className="text-xs text-muted">{g.d}</p>
+                </div>
+                <div className="focus-group space-y-2">
+                  {g.items.map(({ s, why }) => (
+                    <RegraCard key={g.t + s.symbol} s={s} why={why} valor={conta.valor || 1000} onSimular={() => simular(s.symbol)} />
+                  ))}
+                </div>
+              </div>
             ))}
           </div>
         )}
@@ -271,55 +299,36 @@ export default function ComecarPage() {
   );
 }
 
-function BolsaCard({ p, valor, onSimular }: { p: Pick; valor: number; onSimular: () => void }) {
-  const risk = riskLevel(p.st?.vol1y ?? null);
+function RegraCard({ s, why, valor, onSimular }: { s: AssetStats; why: string; valor: number; onSimular: () => void }) {
+  const risk = riskLevel(s.vol1y);
   return (
-    <Card className="focus-item flex flex-col p-4">
+    <Card className="focus-item p-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <Link href={`/bolsa/ativo/${encodeURIComponent(p.a.symbol)}`} className="num text-lg font-bold hover:underline">{p.a.display}</Link>
-          <div className="truncate text-sm">{p.a.name}</div>
-          <div className="text-xs text-muted">{MARKET_TXT[p.a.market]}</div>
+          <Link href={`/bolsa/ativo/${encodeURIComponent(s.symbol)}`} className="num font-bold hover:underline">{displaySymbol(s.symbol)}</Link>
+          <span className="ml-2 text-xs text-muted">{s.name}</span>
+          <div className="text-xs text-text/80">{why}</div>
         </div>
         {risk && <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ring-1 ${RISK_STYLE[risk]}`}>Risco {risk.toLowerCase()}</span>}
       </div>
-
-      <div className="mt-3">
-        <div className="flex justify-between text-xs">
-          <span className="text-muted">Força agora</span>
-          <span className="font-medium">{forca(p.s.score)} ({p.s.score})</span>
-        </div>
-        <div className="mt-1 h-1.5 overflow-hidden rounded bg-card2">
-          <div className="h-full bg-up" style={{ width: `${p.s.score}%` }} />
-        </div>
-      </div>
-
-      <dl className="mt-3 space-y-1 text-sm">
-        {p.st?.ret1y != null && (
-          <div className="flex justify-between gap-2">
-            <dt className="text-muted">{brl(valor)} há 1 ano viraram</dt>
-            <dd className={`num font-semibold ${p.st.ret1y >= 0 ? "text-up" : "text-down"}`}>{brl(valor * (1 + p.st.ret1y))}</dd>
+      <dl className="mt-2 grid grid-cols-2 gap-x-3 text-xs">
+        {s.ret1y != null && (
+          <div>
+            <dt className="text-muted">{brl(valor)} há 1 ano</dt>
+            <dd className={`num font-semibold ${s.ret1y >= 0 ? "text-up" : "text-down"}`}>{brl(valor * (1 + s.ret1y))}</dd>
           </div>
         )}
-        {p.st?.mdd1y != null && (
-          <div className="flex justify-between gap-2">
+        {s.mdd1y != null && (
+          <div>
             <dt className="text-muted"><Termo k="piorQueda" /> no ano</dt>
-            <dd className="num text-down">{pc(p.st.mdd1y)}</dd>
+            <dd className="num text-down">{pc(s.mdd1y)}</dd>
           </div>
         )}
       </dl>
-
-      {plainReasons(p.s).length > 0 && (
-        <ul className="mt-3 space-y-0.5 text-xs text-muted">
-          {plainReasons(p.s).map((r) => (
-            <li key={r}>✓ {r}</li>
-          ))}
-        </ul>
-      )}
-
-      <button type="button" onClick={onSimular} className="mt-auto pt-3 text-left text-sm font-medium text-info hover:underline">
-        Simular prazo e stop →
-      </button>
+      <div className="mt-2 flex items-center justify-between text-xs">
+        <span className="num text-muted">1 ação: {brl(s.price)}</span>
+        <button type="button" onClick={onSimular} className="font-medium text-info hover:underline">Simular →</button>
+      </div>
     </Card>
   );
 }

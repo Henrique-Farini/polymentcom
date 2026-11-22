@@ -2,12 +2,12 @@ import "server-only";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { getBolsaAnalysis } from "@/lib/analise/bolsa";
-import { getAssets } from "@/lib/bolsa/server";
-import { DEFAULT_UNIVERSE } from "@/lib/bolsa/universe";
-import { pickPoly } from "@/lib/picks";
+import { getAssets, getDividends, type Dividend } from "@/lib/bolsa/server";
+import { CORE_ETFS, MOMENTUM_UNIVERSE, displaySymbol } from "@/lib/bolsa/universe";
+import { pickPoly, pickRegraNova } from "@/lib/picks";
 import { getMarketQuote, getMarkets } from "@/lib/polymarket/server";
 import { DEFAULT_POLY_SETTINGS } from "@/lib/score/types";
-import { applyQuote, brl, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
+import { allocateWholeShares, applyDividend, applyQuote, brl, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
 import type { Carteira, Position, Quote } from "./types";
 
 /**
@@ -74,8 +74,14 @@ async function refresh(c: Carteira) {
     });
   }
 
+  // Dividendos das ações já compradas (data ex depois da compra).
+  const held = [...new Set(live.filter((p) => p.area === "bolsa" && p.status === "aberta").map((p) => p.ref))];
+  const divs = new Map<string, Dividend[]>();
+  await Promise.all(held.map((s) => getDividends(s).then((d) => divs.set(s, d)).catch(() => undefined)));
+
   for (const p of live) {
     if (p.area === "bolsa") {
+      for (const d of divs.get(p.ref) ?? []) applyDividend(c, p, d, fx, now);
       const q = bq.get(p.ref);
       if (q) applyQuote(c, p, q, fx, now);
     } else {
@@ -129,7 +135,7 @@ export function novaCarteira(cash: number, days: number | null) {
   });
 }
 
-export type NewOrder = Pick<Position, "area" | "ref" | "label" | "sub" | "currency" | "amountBRL" | "stopPct" | "holdDays">;
+export type NewOrder = Pick<Position, "area" | "ref" | "label" | "sub" | "currency" | "amountBRL" | "stopPct" | "holdDays" | "wholeShares">;
 
 export async function ordem(o: NewOrder) {
   await withLock(async () => {
@@ -177,75 +183,70 @@ export async function editarTeste(e: { dias?: number | null; deposito?: number }
 export interface AutoOptions {
   /** Fração do dinheiro para o Polymarket (0 a 0.3). */
   partePoly: number;
-  /** Quantas ações na parte de momento. */
-  nMomento: number;
-  /** Stop só na parte de ações (null = sem stop; o backtest mostrou que stop piora). */
+  /** Quantas ações em cada parte (momento e baixa volatilidade). */
+  nAcoes: number;
+  /** Stop só nas ações (null = sem stop; o backtest mostrou que stop piora). */
   stop: number | null;
   holdDays: number;
 }
 
-/** ETFs do núcleo: o mercado brasileiro e o americano inteiros. */
-const CORE: { symbol: string; label: string; sub: string }[] = [
-  { symbol: "BOVA11.SA", label: "BOVA11", sub: "ETF Ibovespa" },
-  { symbol: "IVVB11.SA", label: "IVVB11", sub: "ETF S&P 500 em reais" },
-];
+const CORE_INFO: Record<string, string> = { "BOVA11.SA": "ETF Ibovespa", "IVVB11.SA": "ETF S&P 500 em reais" };
 
 /**
- * Regra nova (testada em 4 anos de dados): metade no núcleo (BOVA11 + IVVB11) e metade nas ações
- * com mais momento 12-1 (as que mais subiram em 12 meses, ignorando o último mês).
- * Polymarket: parte pequena, só em mercados que se resolvem dentro do prazo, segurados até o resultado.
+ * Regra adotada (16 anos de teste, revisão mensal): 1/3 no núcleo (BOVA11 + IVVB11),
+ * 1/3 nas ações com mais momento 12-1 e 1/3 nas que menos oscilam. Tudo comprável pelo Brasil:
+ * ações americanas viram BDR e cripto vira ETF da B3. Só ações inteiras, como na corretora.
+ * Polymarket: parte pequena, só mercados que terminam no prazo, segurados até o resultado.
  */
 export async function montarAuto(o: AutoOptions) {
   const c0 = await load();
   if (!c0) throw new Error("Crie a carteira primeiro");
   const cash = c0.cash;
-  const symbols = DEFAULT_UNIVERSE.map((u) => u.symbol);
-  const stockSymbols = DEFAULT_UNIVERSE.filter(
-    (u) => !u.symbol.startsWith("^") && !u.symbol.endsWith("=X") && !CORE.some((c) => c.symbol === u.symbol),
-  ).map((u) => u.symbol);
 
   const [stats, markets] = await Promise.all([
-    getBolsaAnalysis(symbols).then((r) => r.value.assets),
+    getBolsaAnalysis([...MOMENTUM_UNIVERSE, ...CORE_ETFS]).then((r) => r.value.assets),
     o.partePoly > 0 ? getMarkets().then((r) => r.value) : Promise.resolve([]),
   ]);
+  const { momentum: mom, lowVol, core } = pickRegraNova(stats, MOMENTUM_UNIVERSE, CORE_ETFS, o.nAcoes);
 
-  const momentum = stats
-    .filter((s) => stockSymbols.includes(s.symbol) && s.ret1y !== null && s.ret1m !== null)
-    .map((s) => ({ s, mom: (1 + s.ret1y!) / (1 + s.ret1m!) - 1 }))
-    .sort((a, b) => b.mom - a.mom)
-    .slice(0, o.nMomento);
-  const coreOk = CORE.filter((c) => stats.some((s) => s.symbol === c.symbol));
+  // Pesos-alvo: 1/3 para cada parte (somando quem aparecer em duas).
+  const third = core.length ? 1 / 3 : 1 / 2;
+  const weight = new Map<string, number>();
+  const why = new Map<string, string[]>();
+  const add = (sym: string, w: number, reason: string) => {
+    weight.set(sym, (weight.get(sym) ?? 0) + w);
+    why.set(sym, [...(why.get(sym) ?? []), reason]);
+  };
+  core.forEach((s) => add(s.symbol, third / core.length, CORE_INFO[s.symbol] ?? "núcleo"));
+  mom.forEach(({ s, mom: m }) => add(s.symbol, third / mom.length, `momento ${m >= 0 ? "+" : ""}${(m * 100).toFixed(0)}% em 12 meses`));
+  lowVol.forEach((s) => add(s.symbol, third / lowVol.length, `baixa volatilidade (${(s.vol1y! * 100).toFixed(0)}% ao ano)`));
 
-  // Polymarket: só o que termina antes do prazo acabar, para segurar até o resultado (sem pagar spread na saída).
+  // Polymarket: só o que termina antes do prazo acabar.
   const deadline = Date.now() + o.holdDays * 86_400_000;
   const polyPicks =
-    o.partePoly > 0
-      ? pickPoly(
-          markets.filter((m) => m.endDate && Date.parse(m.endDate) <= deadline),
-          DEFAULT_POLY_SETTINGS,
-          2,
-        )
-      : [];
+    o.partePoly > 0 ? pickPoly(markets.filter((m) => m.endDate && Date.parse(m.endDate) <= deadline), DEFAULT_POLY_SETTINGS, 2) : [];
   const polyCash = polyPicks.length ? Math.floor(cash * o.partePoly) : 0;
   const bolsaCash = cash - polyCash;
-  const coreCash = coreOk.length && momentum.length ? bolsaCash / 2 : coreOk.length ? bolsaCash : 0;
-  const momCash = bolsaCash - coreCash;
+
+  const bySym = new Map(stats.map((s) => [s.symbol, s]));
+  const alloc = allocateWholeShares(
+    [...weight.entries()].map(([key, w]) => ({ key, price: bySym.get(key)!.price, weight: w })),
+    bolsaCash,
+  );
   const cut = (x: number) => Math.floor(x * 100) / 100;
 
   const orders: NewOrder[] = [
-    ...coreOk.map(
-      (c): NewOrder => ({ area: "bolsa", ref: c.symbol, label: c.label, sub: c.sub, currency: "BRL", amountBRL: cut(coreCash / coreOk.length), stopPct: null, holdDays: o.holdDays }),
-    ),
-    ...momentum.map(
-      ({ s, mom }): NewOrder => ({
+    ...alloc.map(
+      (a): NewOrder => ({
         area: "bolsa",
-        ref: s.symbol,
-        label: s.display,
-        sub: `${s.name} · momento ${mom >= 0 ? "+" : ""}${(mom * 100).toFixed(0)}% em 12 meses`,
-        currency: s.symbol.endsWith(".SA") ? "BRL" : "USD",
-        amountBRL: cut(momCash / momentum.length),
-        stopPct: o.stop,
+        ref: a.key,
+        label: displaySymbol(a.key),
+        sub: `${bySym.get(a.key)!.name} · ${why.get(a.key)!.join(" e ")}`,
+        currency: "BRL",
+        amountBRL: cut(a.amount),
+        stopPct: CORE_ETFS.includes(a.key) ? null : o.stop,
         holdDays: o.holdDays,
+        wholeShares: true,
       }),
     ),
     ...polyPicks.map(
@@ -261,8 +262,9 @@ export async function montarAuto(o: AutoOptions) {
       }),
     ),
   ].filter((x) => x.amountBRL >= 1);
-  if (!orders.length) throw new Error("Nenhum ativo passou nos critérios agora");
+  if (!orders.length) throw new Error("Com esse valor não dá para comprar nenhuma ação inteira dos escolhidos");
 
+  const skipped = [...weight.keys()].filter((k) => !alloc.some((a) => a.key === k)).map(displaySymbol);
   await withLock(async () => {
     const c = await load();
     if (!c) throw new Error("Sem carteira");
@@ -270,9 +272,10 @@ export async function montarAuto(o: AutoOptions) {
     c.events.push({
       t: Date.now(),
       kind: "info",
-      text: `Regra nova (núcleo + momento): ${brl(coreCash)} em BOVA11/IVVB11, ${brl(momCash)} em ${momentum.map((m) => m.s.display).join(", ")}${
-        polyCash ? ` e ${brl(polyCash)} no Polymarket (só mercados que terminam no prazo)` : ""
-      }. Prazo ${o.holdDays} dias${o.stop ? `, stop ${Math.round(o.stop * 100)}% nas ações` : ", sem stop"}.`,
+      text:
+        `Regra nova (núcleo + momento + baixa volatilidade): ${alloc.length} ordens de ações inteiras somando ${brl(alloc.reduce((s, a) => s + a.amount, 0))}` +
+        `${polyCash ? ` e ${brl(polyCash)} no Polymarket` : ""}. Prazo ${o.holdDays} dias${o.stop ? `, stop ${Math.round(o.stop * 100)}% nas ações` : ", sem stop"}.` +
+        `${skipped.length ? ` Ficaram de fora por não caber nem 1 ação: ${skipped.join(", ")}.` : ""}`,
     });
     await save(c);
   });

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, LiveBadge } from "@/components/ui";
 import { positionPnl, positionValue, totalValue } from "@/lib/carteira/engine";
 import type { Carteira, CarteiraEvent, EquityPoint, Position } from "@/lib/carteira/types";
-import { DEFAULT_UNIVERSE, displaySymbol } from "@/lib/bolsa/universe";
+import { B3_EQUIVALENT, DEFAULT_UNIVERSE, displaySymbol, execSymbol } from "@/lib/bolsa/universe";
 import { useConta } from "@/lib/client/conta";
 import { usePolling, useNow } from "@/lib/client/hooks";
 import type { PolyMarket } from "@/lib/polymarket/types";
@@ -291,7 +291,7 @@ function Investir({
   const [tab, setTab] = useState<"auto" | "manual">("auto");
   const [partePoly, setPartePoly] = useState(0.1);
   const [stop, setStop] = useState(0);
-  const [nMomento, setNMomento] = useState(4);
+  const [nAcoes, setNAcoes] = useState(4);
   const daysLeft = c.endsAt ? Math.max(1, Math.round((c.endsAt - Date.now()) / 86_400_000)) : 7;
   const [dias, setDias] = useState(daysLeft);
 
@@ -311,13 +311,13 @@ function Investir({
       {tab === "auto" ? (
         <div className="mt-3 space-y-3">
           <p className="text-sm text-muted">
-            <b className="text-text">Regra nova: núcleo + momento.</b> Metade em BOVA11 e IVVB11 (o mercado brasileiro e o americano inteiros) e metade nas ações que mais subiram em 12 meses,
-            ignorando o último mês. Foi a combinação que melhor equilibrou retorno e queda no{" "}
-            <Link href="/analise?aba=estrategias" className="text-info hover:underline">teste de 4 anos</Link>. Não usa o seu perfil.
+            <b className="text-text">Regra nova: um terço em cada parte.</b> Núcleo (BOVA11 e IVVB11, o mercado brasileiro e o americano inteiros), as ações que mais subiram em 12 meses (momento) e as que menos oscilam (baixa volatilidade).
+            Ações americanas entram como BDR e cripto como ETF da B3, sempre em ações inteiras. Foi a regra mais equilibrada no{" "}
+            <Link href="/analise?aba=estrategias" className="text-info hover:underline">teste de 16 anos</Link>. Não usa o seu perfil.
           </p>
           <div className="flex flex-wrap items-end gap-3 text-sm">
-            <Lbl t="Ações de momento">
-              <select className={sel} value={nMomento} onChange={(e) => setNMomento(Number(e.target.value))}>
+            <Lbl t="Ações por parte">
+              <select className={sel} value={nAcoes} onChange={(e) => setNAcoes(Number(e.target.value))}>
                 {[3, 4, 5, 6].map((n) => <option key={n}>{n}</option>)}
               </select>
             </Lbl>
@@ -342,7 +342,7 @@ function Investir({
             <button
               type="button"
               disabled={busy}
-              onClick={() => onAuto({ partePoly, nMomento, stop, dias })}
+              onClick={() => onAuto({ partePoly, nAcoes, stop, dias })}
               className="rounded-lg bg-info px-4 py-2 font-semibold text-black disabled:opacity-40"
             >
               {busy ? "Montando…" : "Montar carteira"}
@@ -388,7 +388,9 @@ function Manual({ cash, busy, defaultDays, defaultStop, onOrder }: { cash: numbe
   function send() {
     if (area === "bolsa") {
       const u = DEFAULT_UNIVERSE.find((x) => x.symbol === ref)!;
-      onOrder({ area, ref, label: displaySymbol(ref), sub: u.name, currency: ref.endsWith(".SA") ? "BRL" : "USD", valor, stop, dias });
+      const exec = execSymbol(ref);
+      const eqv = B3_EQUIVALENT[ref];
+      onOrder({ area, ref: exec, label: displaySymbol(exec), sub: eqv ? `${eqv.note} · ${u.name}` : u.name, currency: "BRL", valor, stop, dias, wholeShares: true });
     } else {
       const m = polyOpts.find((x) => x.id === ref);
       if (!m) return;
@@ -407,7 +409,12 @@ function Manual({ cash, busy, defaultDays, defaultStop, onOrder }: { cash: numbe
       <Lbl t={area === "bolsa" ? "Ativo" : "Mercado (compra o primeiro resultado)"}>
         <select className={`${sel} max-w-md`} value={ref} onChange={(e) => setRef(e.target.value)}>
           {area === "bolsa"
-            ? bolsaOpts.map((u) => <option key={u.symbol} value={u.symbol}>{displaySymbol(u.symbol)} · {u.name}</option>)
+            ? bolsaOpts.map((u) => (
+                <option key={u.symbol} value={u.symbol}>
+                  {displaySymbol(execSymbol(u.symbol))} · {u.name}
+                  {B3_EQUIVALENT[u.symbol] ? ` (${B3_EQUIVALENT[u.symbol].note})` : ""}
+                </option>
+              ))
             : polyOpts.map((m) => <option key={m.id} value={m.id}>{Math.round(m.probability * 100)}% · {m.question}</option>)}
         </select>
       </Lbl>

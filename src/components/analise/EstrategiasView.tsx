@@ -11,7 +11,7 @@ const LINES: { key: string; color: string; short: string }[] = [
   { key: "nova", color: "#3987e5", short: "Regra nova" },
   { key: "app", color: "#d95926", short: "Regra antiga" },
   { key: "nucleo", color: "#199e70", short: "Núcleo (ETFs)" },
-  { key: "^GSPC", color: "#c98500", short: "S&P 500" },
+  { key: "^BVSP", color: "#c98500", short: "Ibovespa" },
 ];
 
 export function EstrategiasView() {
@@ -39,7 +39,7 @@ export function EstrategiasView() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <p className="max-w-3xl text-sm text-muted">
-          Teste de {fmtDate(d.from)} a {fmtDate(d.to)}: em cada data, cada estratégia escolhe usando só os dados até aquele dia, segura até a próxima revisão e mede o resultado.
+          Teste de {fmtDate(d.from)} a {fmtDate(d.to)} com {d.universe.length} ativos compráveis pelo Brasil (ações da B3, BDRs e ETFs), tudo em reais e com dividendos. Em cada data, cada estratégia escolhe usando só os dados até aquele dia, segura até a próxima revisão e mede o resultado.
           Custos de 0,1% por compra e por venda. Sem impostos.
         </p>
         <Segmented<"7" | "28">
@@ -91,6 +91,7 @@ export function EstrategiasView() {
                 <th className="px-2 py-2 text-right font-medium">Total</th>
                 <th className="px-2 py-2 text-right font-medium">Com custos</th>
                 <th className="px-2 py-2 text-right font-medium">Ao ano</th>
+                <th className="px-2 py-2 text-right font-medium" title="Retorno ao ano na primeira e na segunda metade do período. Uma regra boa funciona nas duas.">1ª / 2ª metade</th>
                 <th className="px-2 py-2 text-right font-medium">Volatilidade</th>
                 <th className="px-2 py-2 text-right font-medium">Ret ÷ risco</th>
                 <th className="px-2 py-2 text-right font-medium">Pior queda</th>
@@ -107,9 +108,10 @@ export function EstrategiasView() {
                   </td>
                   <td className="num px-2 text-right">{pct(s.total, 0)}</td>
                   <td className="num px-2 text-right">
-                    <span className="rounded px-1.5 py-0.5" style={{ background: divergingBg(s.totalAfterCosts, 2) }}>{pct(s.totalAfterCosts, 0)}</span>
+                    <span className="rounded px-1.5 py-0.5" style={{ background: divergingBg(s.totalAfterCosts, 40) }}>{pct(s.totalAfterCosts, 0)}</span>
                   </td>
                   <td className="num px-2 text-right">{pct(s.cagr)}</td>
+                  <td className="num px-2 text-right text-muted">{pct(s.cagrA, 0)} / {pct(s.cagrB, 0)}</td>
                   <td className="num px-2 text-right">{pct(s.vol, 0, false)}</td>
                   <td className="num px-2 text-right font-semibold">{s.retRisk.toFixed(2)}</td>
                   <td className="num px-2 text-right text-down">{pct(s.maxDD, 0)}</td>
@@ -123,8 +125,8 @@ export function EstrategiasView() {
           </table>
         </div>
         <p className="px-4 py-2 text-[11px] text-muted">
-          Cuidado: a lista de ações foi escolhida hoje e inclui vencedores conhecidos (NVDA, AMD, Bitcoin), o que favorece as estratégias de ações. Os ETFs e os índices não têm esse problema.
-          4 anos é pouco e foram, na maior parte, anos de alta.
+          Cuidado: a lista usa as ações que existem hoje (empresas que quebraram ou saíram da bolsa não entram). Isso infla as estratégias de ações: “comprar todos” fez bem mais que o Ibovespa. Compare as estratégias entre si; os ETFs e os índices não têm esse problema.
+          Divisão das metades em {fmtDate(d.splitAt)}. Sem impostos.
         </p>
       </Card>
     </div>

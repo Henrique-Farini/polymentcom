@@ -51,6 +51,7 @@ export async function POST(req: Request) {
           amountBRL: num(b.valor, 1, 10_000_000, 0),
           stopPct: stopOf(b.stop),
           holdDays: num(b.dias, 1, 365, 7),
+          wholeShares: area === "bolsa" && b.wholeShares === true,
         };
         c = await ordem(o);
         break;
@@ -58,7 +59,7 @@ export async function POST(req: Request) {
       case "auto":
         c = await montarAuto({
           partePoly: num(b.partePoly, 0, 0.3, 0.1),
-          nMomento: Math.round(num(b.nMomento, 1, 8, 4)),
+          nAcoes: Math.round(num(b.nAcoes ?? b.nMomento, 1, 8, 4)),
           stop: stopOf(b.stop),
           holdDays: num(b.dias, 1, 365, 7),
         });
