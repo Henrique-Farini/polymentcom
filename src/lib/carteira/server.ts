@@ -7,7 +7,7 @@ import { CORE_ETFS, MOMENTUM_UNIVERSE, displaySymbol } from "@/lib/bolsa/univers
 import { leadOf, pickLongshots, pickRegraNova, topicOf } from "@/lib/picks";
 import { getMarketQuote, getMarkets } from "@/lib/polymarket/server";
 import { DEFAULT_POLY_SETTINGS } from "@/lib/score/types";
-import { allocateWholeShares, applyDividend, applyQuote, areaCash, areaSummary, brl, ensureWallets, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
+import { allocateWholeShares, applyDividend, applyQuote, areaCash, areaSummary, autopilotDue, brl, ensureWallets, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
 import type { Carteira, Position, Quote } from "./types";
 
 /**
@@ -124,9 +124,15 @@ export async function getCarteira(maxAgeMs = 30_000) {
   return c;
 }
 
+/** Uma volta do cronômetro: atualiza preços e, se o piloto estiver ligado, aposta/investe. */
+async function tick() {
+  await checkNow();
+  await runAutopilot();
+}
+
 export function startLoop() {
-  // O cronômetro sobrevive quando o código é recarregado; ele chama sempre a versão mais nova de checkNow.
-  g.__carteiraCheck = checkNow;
+  // O cronômetro sobrevive quando o código é recarregado; ele chama sempre a versão mais nova.
+  g.__carteiraCheck = tick;
   if (g.__carteiraTimer) return;
   g.__carteiraTimer = setInterval(() => {
     g.__carteiraCheck?.().catch(() => undefined);
@@ -134,7 +140,7 @@ export function startLoop() {
 }
 
 // Ao carregar (ou recarregar) este arquivo, aponta o cronômetro para o código novo.
-g.__carteiraCheck = checkNow;
+g.__carteiraCheck = tick;
 // Cronômetros criados por versões antigas (antes desta correção) chamam o código velho: troca por um novo.
 if (g.__carteiraTimer) {
   clearInterval(g.__carteiraTimer);
@@ -207,6 +213,10 @@ export interface AutoOptions {
   holdDays: number;
   /** Polymarket: com quanto tempo antes do evento apostar (ver LEADS). */
   antecedencia?: string;
+  /** Polymarket: máximo de apostas novas nesta rodada (padrão 15). */
+  maxNew?: number;
+  /** Polymarket: fração do patrimônio do caixa que fica guardada (padrão 0). */
+  reserva?: number;
 }
 
 const CORE_INFO: Record<string, string> = { "BOVA11.SA": "ETF Ibovespa", "IVVB11.SA": "ETF S&P 500 em reais" };
@@ -221,7 +231,8 @@ export async function montarAuto(o: AutoOptions) {
   const c0 = await load();
   if (!c0) throw new Error("Crie a carteira primeiro");
   const bolsaCash = o.area === "bolsa" ? areaCash(c0, "bolsa") : 0;
-  const polyBudget = o.area === "polymarket" ? areaCash(c0, "polymarket") : 0;
+  const polyBudget =
+    o.area === "polymarket" ? Math.max(0, areaCash(c0, "polymarket") - (o.reserva ?? 0) * areaSummary(c0, "polymarket").patrimonio) : 0;
 
   const [stats, markets] = await Promise.all([
     getBolsaAnalysis([...MOMENTUM_UNIVERSE, ...CORE_ETFS]).then((r) => r.value.assets),
@@ -249,7 +260,7 @@ export async function montarAuto(o: AutoOptions) {
       ? pickLongshots(markets, DEFAULT_POLY_SETTINGS, {
           minDays: leadOf(o.antecedencia).minDays,
           maxDays: leadOf(o.antecedencia).maxDays,
-          n: 15,
+          n: o.maxNew ?? 15,
           // Não aposta de novo em assuntos onde já há aposta aberta (mesmo evento ou mesma pergunta com outra data).
           excludeTopics: new Set(
             c0.positions
@@ -329,4 +340,74 @@ export async function montarAuto(o: AutoOptions) {
     await save(c);
   });
   return checkNow();
+}
+
+
+/* ----------------------------- piloto automático ----------------------------- */
+
+const g2 = globalThis as unknown as { __pilotoRodando?: boolean };
+
+/** Marca a hora da rodada antes de rodar (para não repetir se algo falhar). */
+async function markRun(field: "lastPoly" | "lastBolsa", note?: string) {
+  await withLock(async () => {
+    const c = await load();
+    if (!c?.auto) return;
+    c.auto[field] = Date.now();
+    if (note) c.events.push({ t: Date.now(), kind: "info", text: note });
+    await save(c);
+  });
+}
+
+/**
+ * Piloto automático: no Polymarket, a cada N horas procura azarões novos (até `maxNew` por rodada,
+ * guardando a reserva); na Bolsa, monta a regra de três partes quando não há posição.
+ */
+export async function runAutopilot() {
+  if (g2.__pilotoRodando) return;
+  g2.__pilotoRodando = true;
+  try {
+    const c = await load();
+    if (!c) return;
+    const due = autopilotDue(c);
+    const a = c.auto;
+    if (!a) return;
+    if (due.bolsa) {
+      await markRun("lastBolsa");
+      await montarAuto({ area: "bolsa", nAcoes: 4, stop: null, holdDays: 7 }).catch((e) =>
+        markRun("lastBolsa", `Piloto (Bolsa): nada comprado agora (${e instanceof Error ? e.message : e}).`),
+      );
+    }
+    if (due.poly) {
+      await markRun("lastPoly");
+      await montarAuto({
+        area: "polymarket",
+        nAcoes: 4,
+        stop: null,
+        holdDays: 7,
+        antecedencia: a.antecedencia,
+        maxNew: a.maxNew,
+        reserva: a.reserva,
+      }).catch(() => markRun("lastPoly", "Piloto (Polymarket): nenhum azarão novo dentro da regra nesta rodada."));
+    }
+  } finally {
+    g2.__pilotoRodando = false;
+  }
+}
+
+export async function setPiloto(cfg: Partial<NonNullable<Carteira["auto"]>> & { on: boolean }) {
+  await withLock(async () => {
+    const c = await load();
+    if (!c) throw new Error("Crie a carteira primeiro");
+    c.auto = { antecedencia: "qualquer", everyHours: 3, maxNew: 5, reserva: 0.3, ...c.auto, ...cfg };
+    c.events.push({
+      t: Date.now(),
+      kind: "info",
+      text: cfg.on
+        ? `Piloto automático ligado: Polymarket a cada ${c.auto.everyHours} h (até ${c.auto.maxNew} apostas por vez, guardando ${Math.round(c.auto.reserva * 100)}% do caixa); Bolsa montada quando estiver vazia.`
+        : "Piloto automático desligado.",
+    });
+    await save(c);
+  });
+  if (cfg.on) await runAutopilot();
+  return load();
 }

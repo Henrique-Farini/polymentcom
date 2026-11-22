@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { editar, editarTeste, fechar, getCarteira, montarAuto, novaCarteira, ordem, startLoop, type NewOrder } from "@/lib/carteira/server";
+import { editar, editarTeste, fechar, getCarteira, montarAuto, novaCarteira, ordem, setPiloto, startLoop, type NewOrder } from "@/lib/carteira/server";
 import { cdiReturn, getCdi } from "@/lib/server/cdi";
 import { isLocalRequest } from "@/lib/server/local";
 
@@ -74,6 +74,15 @@ export async function POST(req: Request) {
           stop: stopOf(b.stop),
           holdDays: num(b.dias, 1, 365, 7),
           antecedencia: typeof b.antecedencia === "string" ? b.antecedencia.slice(0, 20) : undefined,
+        });
+        break;
+      case "piloto":
+        c = await setPiloto({
+          on: b.on === true,
+          ...(typeof b.antecedencia === "string" ? { antecedencia: b.antecedencia.slice(0, 20) } : {}),
+          ...(b.everyHours !== undefined ? { everyHours: num(b.everyHours, 1, 48, 3) } : {}),
+          ...(b.maxNew !== undefined ? { maxNew: Math.round(num(b.maxNew, 1, 15, 5)) } : {}),
+          ...(b.reserva !== undefined ? { reserva: num(b.reserva, 0, 0.9, 0.3) } : {}),
         });
         break;
       case "fechar":

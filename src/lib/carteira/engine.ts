@@ -305,6 +305,24 @@ export function editCarteira(
   }
 }
 
+/**
+ * O que o piloto automático deve fazer agora.
+ * - Polymarket: a cada `everyHours`, se houver dinheiro livre além da reserva.
+ * - Bolsa: monta a carteira quando não há nenhuma posição da Bolsa (no máximo 1 vez por dia).
+ * Para quando o teste acaba.
+ */
+export function autopilotDue(c: Carteira, now = Date.now()) {
+  const a = c.auto;
+  if (!a?.on || (c.endsAt && now > c.endsAt)) return { poly: false, bolsa: false };
+  const poly = areaSummary(c, "polymarket");
+  const free = poly.cash - a.reserva * poly.patrimonio;
+  const bolsaHas = c.positions.some((p) => p.area === "bolsa" && p.status !== "fechada");
+  return {
+    poly: free >= 10 && (!a.lastPoly || now - a.lastPoly >= a.everyHours * 3_600_000),
+    bolsa: !bolsaHas && areaCash(c, "bolsa") >= 50 && (!a.lastBolsa || now - a.lastBolsa >= 24 * 3_600_000),
+  };
+}
+
 export interface AreaSummary {
   /** Dinheiro livre no caixa da área. */
   cash: number;

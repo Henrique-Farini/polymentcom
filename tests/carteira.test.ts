@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allocateWholeShares, applyDividend, applyQuote, areaCash, areaSummary, ensureWallets, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, positionPnl, recordEquity, totalValue } from "@/lib/carteira/engine";
+import { allocateWholeShares, applyDividend, applyQuote, areaCash, autopilotDue, areaSummary, ensureWallets, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, positionPnl, recordEquity, totalValue } from "@/lib/carteira/engine";
 
 const T0 = 1_700_000_000_000;
 const order = { area: "bolsa" as const, ref: "PETR4.SA", label: "PETR4", sub: "Petrobras", currency: "BRL" as const, amountBRL: 1000, stopPct: 0.08, holdDays: 7 };
@@ -220,5 +220,37 @@ describe("caixas separados", () => {
     expect(old.wallets.bolsa.cash).toBeCloseTo(200);
     expect(old.wallets.polymarket.cash).toBeCloseTo(700);
     expect(old.wallets.bolsa.cash + old.wallets.polymarket.cash).toBeCloseTo(c.cash);
+  });
+});
+
+describe("piloto automático", () => {
+  const H = 3_600_000;
+  const fresh = () => {
+    const c = emptyCarteira(2000, T0, 7, { bolsa: 1000, polymarket: 1000 });
+    c.auto = { on: true, antecedencia: "qualquer", everyHours: 3, maxNew: 5, reserva: 0.3 };
+    return c;
+  };
+
+  it("roda logo no começo, nas duas áreas", () => {
+    expect(autopilotDue(fresh(), T0 + 1)).toEqual({ poly: true, bolsa: true });
+  });
+
+  it("espera o intervalo para apostar de novo e respeita a reserva", () => {
+    const c = fresh();
+    c.auto!.lastPoly = T0;
+    expect(autopilotDue(c, T0 + 2 * H).poly).toBe(false);
+    expect(autopilotDue(c, T0 + 3 * H).poly).toBe(true);
+    // só sobra a reserva (30%): não aposta
+    placeOrder(c, { ...order, area: "polymarket", ref: "x", currency: "USD", stopPct: null, amountBRL: 700 }, T0);
+    expect(autopilotDue(c, T0 + 4 * H).poly).toBe(false);
+  });
+
+  it("não remonta a Bolsa enquanto houver posição, e para quando o teste acaba", () => {
+    const c = fresh();
+    placeOrder(c, { ...order, amountBRL: 500 }, T0);
+    expect(autopilotDue(c, T0 + 1).bolsa).toBe(false);
+    expect(autopilotDue(c, T0 + 8 * 24 * H)).toEqual({ poly: false, bolsa: false });
+    c.auto!.on = false;
+    expect(autopilotDue(c, T0 + 1)).toEqual({ poly: false, bolsa: false });
   });
 });

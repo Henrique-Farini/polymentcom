@@ -10,6 +10,7 @@ import type { Carteira, CarteiraEvent, EquityPoint, Position } from "@/lib/carte
 import { B3_EQUIVALENT, DEFAULT_UNIVERSE, displaySymbol, execSymbol } from "@/lib/bolsa/universe";
 import { useConta } from "@/lib/client/conta";
 import { usePolling, useNow, useStored } from "@/lib/client/hooks";
+import { leadOf } from "@/lib/picks";
 import type { PolyMarket } from "@/lib/polymarket/types";
 
 const brl = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -110,6 +111,7 @@ export default function CarteiraPage() {
         <Criar busy={busy} onCreate={(bolsa, poly, dias) => act({ acao: "nova", valorBolsa: bolsa, valorPoly: poly, dias })} />
       ) : (
         <>
+          <Piloto c={c} now={now} busy={busy} onSet={(o) => act({ acao: "piloto", ...o })} />
           <Resumo c={c} now={now} />
           <AreaCards c={c} area={area} onArea={setArea} />
           <RaioX c={c} cdi={poll.data?.cdi ?? null} />
@@ -1048,5 +1050,42 @@ function AreaTabs({ area, onArea, c }: { area: AreaFilter; onArea: (a: AreaFilte
         ))}
       </div>
     </div>
+  );
+}
+
+/* ----------------------------- piloto automático ----------------------------- */
+
+function Piloto({ c, now, busy, onSet }: { c: Carteira; now: number; busy: boolean; onSet: (o: Record<string, unknown>) => void }) {
+  const a = c.auto;
+  const on = !!a?.on;
+  const ended = !!c.endsAt && now > c.endsAt;
+  const next = a?.lastPoly ? a.lastPoly + a.everyHours * 3_600_000 : null;
+  return (
+    <Card className={`flex flex-wrap items-center justify-between gap-3 p-3 ${on && !ended ? "border-up/50" : ""}`}>
+      <div className="flex items-start gap-3">
+        <span className={`mt-1 h-2.5 w-2.5 shrink-0 rounded-full ${on && !ended ? "live-dot bg-up" : "bg-muted"}`} />
+        <div className="text-sm">
+          <b>Piloto automático {ended ? "encerrado (fim do teste)" : on ? "ligado" : "desligado"}</b>
+          {on && a && (
+            <p className="text-xs text-muted">
+              Polymarket: azarões ({leadOf(a.antecedencia).label.replace(" (melhor no teste)", "")}), a cada {a.everyHours} h, até {a.maxNew} apostas por vez, guardando{" "}
+              {Math.round(a.reserva * 100)}% do caixa. Bolsa: regra de três partes quando estiver vazia.
+              {next && !ended && <> Próxima rodada do Polymarket: {next > now ? `em ${left(next - now)}` : "agora"}.</>}
+            </p>
+          )}
+          {!on && <p className="text-xs text-muted">Ligado, ele aposta e investe sozinho até o fim do teste, sem você precisar fazer nada.</p>}
+        </div>
+      </div>
+      {!ended && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onSet({ on: !on })}
+          className={`rounded-lg px-4 py-1.5 text-sm font-semibold disabled:opacity-40 ${on ? "border border-line text-muted hover:border-down hover:text-down" : "bg-up text-black"}`}
+        >
+          {on ? "Desligar" : "Ligar piloto"}
+        </button>
+      )}
+    </Card>
   );
 }

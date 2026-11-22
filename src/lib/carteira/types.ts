@@ -79,6 +79,17 @@ export interface Carteira {
   equity: EquityPoint[];
   lastCheck: number | null;
   lastError: string | null;
+  /** Piloto automático: aposta e investe sozinho durante o teste. */
+  auto?: {
+    on: boolean;
+    antecedencia: string;
+    /** De quantas em quantas horas procura apostas novas no Polymarket. */
+    everyHours: number;
+    maxNew: number;
+    reserva: number;
+    lastPoly?: number;
+    lastBolsa?: number;
+  };
 }
 
 export interface Quote {
