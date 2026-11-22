@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pickLongshots } from "@/lib/picks";
+import { pickLongshots, topicOf } from "@/lib/picks";
 import type { PolyMarket } from "@/lib/polymarket/types";
 import { DEFAULT_POLY_SETTINGS } from "@/lib/score/types";
 
@@ -20,6 +20,23 @@ describe("pickLongshots", () => {
 
   it("ignora spread largo e liquidez baixa", () => {
     const r = pickLongshots([mk("a", 0.2, 5, { spread: 0.08 }), mk("b", 0.2, 5, { liquidity: 100 })], DEFAULT_POLY_SETTINGS, { minDays: 2, maxDays: 9, now: NOW });
+    expect(r).toEqual([]);
+  });
+});
+
+describe("um assunto por aposta", () => {
+  it("não aposta duas vezes no mesmo evento nem na mesma pergunta com outra data", () => {
+    const a = mk("a", 0.2, 5, { eventSlug: "next-pm-spain", question: "Will Pedro Sánchez be the next Prime Minister of Spain?", liquidity: 90_000 });
+    const b = mk("b", 0.88, 5, { eventSlug: "next-pm-spain", question: "Will Alberto Núñez Feijóo be the next Prime Minister of Spain?" });
+    const c = mk("c", 0.95, 3, { eventSlug: "btc-24", question: "Will the price of Bitcoin be above $54,000 on November 24?", liquidity: 80_000 });
+    const d = mk("d", 0.93, 4, { eventSlug: "btc-25", question: "Will the price of Bitcoin be above $54,000 on November 25?" });
+    const r = pickLongshots([a, b, c, d], DEFAULT_POLY_SETTINGS, { minDays: 2, maxDays: 9, now: NOW });
+    expect(r.map((x) => x.m.id).sort()).toEqual(["a", "c"]);
+  });
+
+  it("pula assuntos em que já existe aposta", () => {
+    const a = mk("a", 0.2, 5, { eventSlug: "taiwan" });
+    const r = pickLongshots([a], DEFAULT_POLY_SETTINGS, { minDays: 2, maxDays: 9, now: NOW, excludeTopics: new Set(["taiwan"]) });
     expect(r).toEqual([]);
   });
 });

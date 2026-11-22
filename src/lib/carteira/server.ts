@@ -4,7 +4,7 @@ import path from "node:path";
 import { getBolsaAnalysis } from "@/lib/analise/bolsa";
 import { getAssets, getDividends, type Dividend } from "@/lib/bolsa/server";
 import { CORE_ETFS, MOMENTUM_UNIVERSE, displaySymbol } from "@/lib/bolsa/universe";
-import { pickLongshots, pickRegraNova } from "@/lib/picks";
+import { pickLongshots, pickRegraNova, topicOf } from "@/lib/picks";
 import { getMarketQuote, getMarkets } from "@/lib/polymarket/server";
 import { DEFAULT_POLY_SETTINGS } from "@/lib/score/types";
 import { allocateWholeShares, applyDividend, applyQuote, areaCash, areaSummary, brl, ensureWallets, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
@@ -244,11 +244,20 @@ export async function montarAuto(o: AutoOptions) {
   // Regra do Polymarket: azarões (5–30%) em mercados que terminam no prazo, muitas apostas pequenas, até o resultado.
   const polyPicks =
     o.area === "polymarket"
-      ? pickLongshots(
-          markets.filter((m) => !c0.positions.some((p) => p.area === "polymarket" && p.status !== "fechada" && p.ref === m.id)),
-          DEFAULT_POLY_SETTINGS,
-          { minDays: 2, maxDays: 9, n: 15 },
-        )
+      ? pickLongshots(markets, DEFAULT_POLY_SETTINGS, {
+          minDays: 2,
+          maxDays: 9,
+          n: 15,
+          // Não aposta de novo em assuntos onde já há aposta aberta (mesmo evento ou mesma pergunta com outra data).
+          excludeTopics: new Set(
+            c0.positions
+              .filter((p) => p.area === "polymarket" && p.status !== "fechada")
+              .flatMap((p) => {
+                const m = markets.find((x) => x.id === p.ref);
+                return m ? topicOf(m) : [];
+              }),
+          ),
+        })
       : [];
   // Tamanho de cada aposta: no máximo 2% do patrimônio (¼ de Kelly com a taxa de acerto histórica).
   // O que sobrar do orçamento fica em caixa: azarão exige muitas apostas pequenas, nunca poucas grandes.

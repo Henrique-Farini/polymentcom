@@ -79,7 +79,26 @@ export interface LongshotPick {
  * azarão (custa 5–30%) cerca de uma semana antes do fim e segurar até o resultado.
  * Perde ~3 de cada 4 vezes: só faz sentido com muitas apostas pequenas.
  */
-export function pickLongshots(markets: PolyMarket[], settings: PolySettings, opts: { minDays: number; maxDays: number; n?: number; now?: number }) {
+/**
+ * Assunto de um mercado: mercados do mesmo evento ("quem será o premiê") ou da mesma pergunta com outra
+ * data/valor ("Bitcoin acima de X no dia 24" e "no dia 25") ganham ou perdem juntos.
+ * Apostar em dois deles não diversifica: é dobrar a mesma aposta.
+ */
+export function topicOf(m: Pick<PolyMarket, "eventSlug" | "question">) {
+  const q = m.question
+    .toLowerCase()
+    .replace(/(january|february|march|april|may|june|july|august|september|october|november|december)/g, "")
+    .replace(/[0-9$,.%]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return [m.eventSlug || q, q];
+}
+
+export function pickLongshots(
+  markets: PolyMarket[],
+  settings: PolySettings,
+  opts: { minDays: number; maxDays: number; n?: number; now?: number; excludeTopics?: Set<string> },
+) {
   const now = opts.now ?? Date.now();
   const out: LongshotPick[] = [];
   for (const m of markets) {
@@ -92,5 +111,15 @@ export function pickLongshots(markets: PolyMarket[], settings: PolySettings, opt
     if (askYes >= 0.05 && askYes < 0.3) out.push({ m, side: "sim", price: askYes, days });
     else if (askNo >= 0.05 && askNo < 0.3) out.push({ m, side: "nao", price: askNo, days });
   }
-  return out.sort((a, b) => b.m.liquidity - a.m.liquidity).slice(0, opts.n ?? 20);
+  // No máximo uma aposta por assunto (o mais líquido), e nenhuma em assunto onde já existe aposta.
+  const used = new Set(opts.excludeTopics ?? []);
+  const picked: LongshotPick[] = [];
+  for (const x of out.sort((a, b) => b.m.liquidity - a.m.liquidity)) {
+    const keys = topicOf(x.m);
+    if (keys.some((k) => used.has(k))) continue;
+    keys.forEach((k) => used.add(k));
+    picked.push(x);
+    if (picked.length >= (opts.n ?? 20)) break;
+  }
+  return picked;
 }
