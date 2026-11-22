@@ -7,7 +7,7 @@ import { CORE_ETFS, MOMENTUM_UNIVERSE, displaySymbol } from "@/lib/bolsa/univers
 import { pickLongshots, pickRegraNova } from "@/lib/picks";
 import { getMarketQuote, getMarkets } from "@/lib/polymarket/server";
 import { DEFAULT_POLY_SETTINGS } from "@/lib/score/types";
-import { allocateWholeShares, applyDividend, applyQuote, brl, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
+import { allocateWholeShares, applyDividend, applyQuote, brl, totalValue, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
 import type { Carteira, Position, Quote } from "./types";
 
 /**
@@ -224,15 +224,22 @@ export async function montarAuto(o: AutoOptions) {
   lowVol.forEach((s) => add(s.symbol, third / lowVol.length, `baixa volatilidade (${(s.vol1y! * 100).toFixed(0)}% ao ano)`));
 
   // Polymarket: só o que termina antes do prazo acabar.
-  const deadlineDays = o.holdDays;
+
   // Regra do Polymarket: azarões (5–30%) em mercados que terminam no prazo, muitas apostas pequenas, até o resultado.
   const polyBudget = Math.floor(cash * o.partePoly);
   const polyPicks =
     o.partePoly > 0
-      ? pickLongshots(markets, DEFAULT_POLY_SETTINGS, { minDays: 2, maxDays: Math.min(9, deadlineDays), n: Math.max(1, Math.min(10, Math.floor(polyBudget / 10))) })
+      ? pickLongshots(
+          markets.filter((m) => !c0.positions.some((p) => p.area === "polymarket" && p.status !== "fechada" && p.ref === m.id)),
+          DEFAULT_POLY_SETTINGS,
+          { minDays: 2, maxDays: 9, n: 15 },
+        )
       : [];
-  const polyCash = polyPicks.length ? polyBudget : 0;
-  const bolsaCash = cash - polyCash;
+  // Tamanho de cada aposta: no máximo 2% do patrimônio (¼ de Kelly com a taxa de acerto histórica).
+  // O que sobrar do orçamento fica em caixa: azarão exige muitas apostas pequenas, nunca poucas grandes.
+  const stake = polyPicks.length ? Math.max(5, Math.min(polyBudget / polyPicks.length, 0.02 * totalValue(c0))) : 0;
+  const polyCash = Math.min(polyBudget, stake * polyPicks.length);
+  const bolsaCash = o.partePoly >= 1 ? 0 : cash - polyBudget;
 
   const bySym = new Map(stats.map((s) => [s.symbol, s]));
   const alloc = allocateWholeShares(
@@ -262,7 +269,7 @@ export async function montarAuto(o: AutoOptions) {
         label: `${side === "sim" ? m.outcomes[0] ?? "Sim" : m.outcomes[1] ?? "Não"} a ${Math.round(price * 100)}¢ · ${m.question}`,
         sub: `${m.category} · azarão, segura até o resultado`,
         currency: "USD",
-        amountBRL: cut(polyCash / polyPicks.length),
+        amountBRL: cut(stake),
         stopPct: null,
         holdDays: o.holdDays + 7,
         side,
@@ -271,7 +278,7 @@ export async function montarAuto(o: AutoOptions) {
   ].filter((x) => x.amountBRL >= 1);
   if (!orders.length) throw new Error("Com esse valor não dá para comprar nenhuma ação inteira dos escolhidos");
 
-  const skipped = [...weight.keys()].filter((k) => !alloc.some((a) => a.key === k)).map(displaySymbol);
+  const skipped = bolsaCash > 0 ? [...weight.keys()].filter((k) => !alloc.some((a) => a.key === k)).map(displaySymbol) : [];
   await withLock(async () => {
     const c = await load();
     if (!c) throw new Error("Sem carteira");
@@ -279,10 +286,19 @@ export async function montarAuto(o: AutoOptions) {
     c.events.push({
       t: Date.now(),
       kind: "info",
-      text:
-        `Regra nova (núcleo + momento + baixa volatilidade): ${alloc.length} ordens de ações inteiras somando ${brl(alloc.reduce((s, a) => s + a.amount, 0))}` +
-        `${polyCash ? ` e ${brl(polyCash)} em ${polyPicks.length} apostas pequenas em azarões do Polymarket` : ""}. Prazo ${o.holdDays} dias${o.stop ? `, stop ${Math.round(o.stop * 100)}% nas ações` : ", sem stop"}.` +
-        `${skipped.length ? ` Ficaram de fora por não caber nem 1 ação: ${skipped.join(", ")}.` : ""}`,
+      text: [
+        alloc.length
+          ? `Bolsa (núcleo + momento + baixa volatilidade): ${alloc.length} ordens de ações inteiras somando ${brl(alloc.reduce((s, a) => s + a.amount, 0))}, prazo ${o.holdDays} dias${o.stop ? `, stop ${Math.round(o.stop * 100)}%` : ", sem stop"}.`
+          : "",
+        polyCash
+          ? `Polymarket (azarões): ${polyPicks.length} apostas de ${brl(stake)} (até 2% do patrimônio cada), somando ${brl(polyCash)}, seguradas até o resultado.`
+          : o.partePoly > 0
+            ? "Polymarket: nenhum azarão novo dentro da regra agora."
+            : "",
+        skipped.length ? `Ficaram de fora por não caber nem 1 ação: ${skipped.join(", ")}.` : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
     });
     await save(c);
   });
