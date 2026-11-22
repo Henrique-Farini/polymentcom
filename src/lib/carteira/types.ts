@@ -67,7 +67,10 @@ export interface EquityPoint {
 
 export interface Carteira {
   startCash: number;
+  /** Caixa total (soma dos caixas das áreas). */
   cash: number;
+  /** Caixa e dinheiro colocado de cada área (Bolsa e Polymarket separados). */
+  wallets?: Record<Area, { cash: number; start: number }>;
   createdAt: number;
   /** Quando o teste termina (só para exibir). */
   endsAt: number | null;

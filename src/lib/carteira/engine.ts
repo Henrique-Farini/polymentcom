@@ -1,19 +1,69 @@
-import type { Carteira, CarteiraEvent, Position, Quote } from "./types";
+import type { Area, Carteira, CarteiraEvent, Position, Quote } from "./types";
 
 const DAY = 86_400_000;
 
-export function emptyCarteira(cash: number, now = Date.now(), days: number | null = 7): Carteira {
+export const AREAS: Area[] = ["bolsa", "polymarket"];
+const AREA_NAME: Record<Area, string> = { bolsa: "Bolsa", polymarket: "Polymarket" };
+
+/**
+ * Cria a carteira. Cada área (Bolsa e Polymarket) tem o próprio caixa.
+ * Sem `split`, o dinheiro é dividido meio a meio.
+ */
+export function emptyCarteira(cash: number, now = Date.now(), days: number | null = 7, split?: Record<Area, number>): Carteira {
+  const s = split ?? { bolsa: cash / 2, polymarket: cash / 2 };
+  const total = s.bolsa + s.polymarket;
   return {
-    startCash: cash,
-    cash,
+    startCash: total,
+    cash: total,
+    wallets: { bolsa: { cash: s.bolsa, start: s.bolsa }, polymarket: { cash: s.polymarket, start: s.polymarket } },
     createdAt: now,
     endsAt: days ? now + days * DAY : null,
     positions: [],
-    events: [{ t: now, kind: "info", text: `Carteira de teste criada com ${brl(cash)} fictícios.` }],
-    equity: [{ t: now, value: cash, base: cash }],
+    events: [{ t: now, kind: "info", text: `Carteira de teste criada: ${brl(s.bolsa)} na Bolsa e ${brl(s.polymarket)} no Polymarket (fictícios).` }],
+    equity: [{ t: now, value: total, base: total }],
     lastCheck: null,
     lastError: null,
   };
+}
+
+/**
+ * Carteiras antigas tinham um caixa só. Divide o dinheiro entre as áreas pelo que cada uma tem aplicado:
+ * cada área começa com metade, e o caixa dela é o começo − o que está aplicado + o que já ganhou ou perdeu.
+ */
+export function ensureWallets(c: Carteira): Carteira {
+  if (c.wallets) return c;
+  const start = c.startCash / 2;
+  const w = {} as NonNullable<Carteira["wallets"]>;
+  for (const a of AREAS) {
+    const ps = c.positions.filter((p) => p.area === a);
+    const committed = ps.filter((p) => p.status !== "fechada").reduce((s, p) => s + p.amountBRL, 0);
+    const realized = ps.filter((p) => p.status === "fechada").reduce((s, p) => s + (p.pnlBRL ?? 0), 0);
+    const divs = ps.filter((p) => p.status !== "fechada").reduce((s, p) => s + (p.divBRL ?? 0), 0);
+    w[a] = { cash: start - committed + realized + divs, start };
+  }
+  // Ajusta arredondamentos e evita caixa negativo, mantendo a soma igual ao caixa total.
+  const diff = c.cash - (w.bolsa.cash + w.polymarket.cash);
+  w.polymarket.cash += diff;
+  for (const [a, b] of [["bolsa", "polymarket"], ["polymarket", "bolsa"]] as const) {
+    if (w[a].cash < 0) {
+      w[b].cash += w[a].cash;
+      w[b].start += w[a].cash;
+      w[a].start -= w[a].cash;
+      w[a].cash = 0;
+    }
+  }
+  c.wallets = w;
+  return c;
+}
+
+export function areaCash(c: Carteira, a: Area) {
+  return ensureWallets(c).wallets![a].cash;
+}
+
+/** Toda entrada e saída de dinheiro passa por aqui: mantém o caixa da área e o total juntos. */
+function addCash(c: Carteira, a: Area, x: number) {
+  ensureWallets(c).wallets![a].cash += x;
+  c.cash += x;
 }
 
 export const brl = (n: number) => n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
@@ -43,9 +93,10 @@ export function placeOrder(
   now = Date.now(),
 ): Position {
   if (!(o.amountBRL > 0)) throw new Error("Valor precisa ser maior que zero");
-  if (o.amountBRL > c.cash + 1e-6) throw new Error(`Saldo insuficiente: disponível ${brl(c.cash)}`);
+  const free = areaCash(c, o.area);
+  if (o.amountBRL > free + 1e-6) throw new Error(`Saldo insuficiente no caixa ${o.area === "bolsa" ? "da Bolsa" : "do Polymarket"}: disponível ${brl(free)}`);
   const p: Position = { ...o, id: `${o.area}-${o.ref}-${now.toString(36)}`, createdAt: now, status: "pendente" };
-  c.cash -= o.amountBRL;
+  addCash(c, o.area, -o.amountBRL);
   c.positions.push(p);
   return p;
 }
@@ -64,7 +115,7 @@ function close(c: Carteira, p: Position, price: number, reason: Position["exitRe
   const fx = p.currency === "USD" ? p.fxLast ?? p.fxEntry ?? 1 : 1;
   const value = (p.qty ?? 0) * price * fx;
   p.pnlBRL = value + (p.divBRL ?? 0) - p.amountBRL;
-  c.cash += value;
+  addCash(c, p.area, value);
   const ret = p.pnlBRL / p.amountBRL;
   const why =
     reason === "stop"
@@ -98,7 +149,7 @@ export function applyQuote(c: Carteira, p: Position, q: Quote, fx: number, now =
       p.exitReason = "resolvido";
       p.pnlBRL = 0;
       p.qty = 0;
-      c.cash += p.amountBRL;
+      addCash(c, p.area, p.amountBRL);
       log(c, { t: now, kind: "info", text: `Ordem de ${p.label} cancelada: o mercado encerrou antes da compra.` });
       return;
     }
@@ -114,12 +165,12 @@ export function applyQuote(c: Carteira, p: Position, q: Quote, fx: number, now =
         p.exitReason = "manual";
         p.pnlBRL = 0;
         p.qty = 0;
-        c.cash += p.amountBRL;
+        addCash(c, p.area, p.amountBRL);
         log(c, { t: now, kind: "info", text: `Ordem de ${p.label} cancelada: ${brl(p.amountBRL)} não compra nem 1 ação (custa ${brl(unitBRL)}).` });
         return;
       }
       const spent = qty * unitBRL;
-      c.cash += p.amountBRL - spent;
+      addCash(c, p.area, p.amountBRL - spent);
       p.amountBRL = spent;
     }
     p.status = "aberta";
@@ -161,7 +212,7 @@ export function applyDividend(c: Carteira, p: Position, d: { date: number; amoun
   const value = p.qty * d.amount * (p.currency === "USD" ? fx : 1);
   p.divPaid = [...(p.divPaid ?? []), d.date];
   p.divBRL = (p.divBRL ?? 0) + value;
-  c.cash += value;
+  addCash(c, p.area, value);
   log(c, { t: now, kind: "info", text: `Recebeu ${brl(value)} de dividendos de ${p.label}.` });
 }
 
@@ -174,7 +225,7 @@ export function closeManual(c: Carteira, id: string, now = Date.now()) {
     p.exitReason = "manual";
     p.pnlBRL = 0;
     p.qty = 0;
-    c.cash += p.amountBRL;
+    addCash(c, p.area, p.amountBRL);
     log(c, { t: now, kind: "info", text: `Ordem de ${p.label} cancelada antes da compra.` });
     return;
   }
@@ -199,8 +250,9 @@ export function editPosition(c: Carteira, id: string, e: PositionEdit, now = Dat
     if (p.status !== "pendente") throw new Error("Depois da compra o valor não muda: venda e compre de novo");
     if (!(e.amountBRL > 0)) throw new Error("Valor precisa ser maior que zero");
     const delta = e.amountBRL - p.amountBRL;
-    if (delta > c.cash + 1e-6) throw new Error(`Saldo insuficiente: disponível ${brl(c.cash)}`);
-    c.cash -= delta;
+    const free = areaCash(c, p.area);
+    if (delta > free + 1e-6) throw new Error(`Saldo insuficiente no caixa ${p.area === "bolsa" ? "da Bolsa" : "do Polymarket"}: disponível ${brl(free)}`);
+    addCash(c, p.area, -delta);
     changes.push(`valor ${brl(p.amountBRL)} → ${brl(e.amountBRL)}`);
     p.amountBRL = e.amountBRL;
   }
@@ -218,21 +270,50 @@ export function editPosition(c: Carteira, id: string, e: PositionEdit, now = Dat
   if (changes.length) log(c, { t: now, kind: "info", text: `Alterou ${p.label}: ${changes.join(", ")}.` });
 }
 
-/** Muda a duração do teste e/ou coloca mais dinheiro fictício. */
-export function editCarteira(c: Carteira, e: { dias?: number | null; deposito?: number }, now = Date.now()) {
+
+/**
+ * Muda a duração do teste, coloca mais dinheiro fictício numa área ou transfere entre as áreas.
+ * Depósitos e transferências mudam o "começo" de cada área, para não contarem como lucro.
+ */
+export function editCarteira(
+  c: Carteira,
+  e: { dias?: number | null; deposito?: number; area?: Area; transferir?: { de: Area; para: Area; valor: number } },
+  now = Date.now(),
+) {
+  ensureWallets(c);
   if (e.dias !== undefined) {
     c.endsAt = e.dias ? c.createdAt + e.dias * DAY : null;
     log(c, { t: now, kind: "info", text: e.dias ? `Duração do teste alterada para ${e.dias} dias.` : "Teste sem data para acabar." });
   }
   if (e.deposito) {
     if (!(e.deposito > 0)) throw new Error("Valor inválido");
-    c.cash += e.deposito;
+    const a = e.area ?? "bolsa";
+    addCash(c, a, e.deposito);
+    c.wallets![a].start += e.deposito;
     c.startCash += e.deposito;
-    log(c, { t: now, kind: "info", text: `Adicionou ${brl(e.deposito)} fictícios.` });
+    log(c, { t: now, kind: "info", text: `Adicionou ${brl(e.deposito)} fictícios ao caixa ${a === "bolsa" ? "da Bolsa" : "do Polymarket"}.` });
+  }
+  if (e.transferir) {
+    const { de, para, valor } = e.transferir;
+    if (de === para || !(valor > 0)) throw new Error("Transferência inválida");
+    if (valor > c.wallets![de].cash + 1e-6) throw new Error(`O caixa ${de === "bolsa" ? "da Bolsa" : "do Polymarket"} só tem ${brl(c.wallets![de].cash)} livres`);
+    addCash(c, de, -valor);
+    addCash(c, para, valor);
+    c.wallets![de].start -= valor;
+    c.wallets![para].start += valor;
+    log(c, { t: now, kind: "info", text: `Transferiu ${brl(valor)} do caixa ${AREA_NAME[de]} para o caixa ${AREA_NAME[para]}.` });
   }
 }
 
 export interface AreaSummary {
+  /** Dinheiro livre no caixa da área. */
+  cash: number;
+  /** Dinheiro colocado na área (depósitos e transferências). */
+  start: number;
+  /** Caixa + reservado + valor das posições. */
+  patrimonio: number;
+  /** Patrimônio da área sobre o dinheiro colocado nela. */
+  retStart: number;
   /** Posições abertas (já compradas). */
   open: number;
   /** Ordens esperando para comprar. */
@@ -268,7 +349,13 @@ export function areaSummary(c: Carteira, area: Position["area"]): AreaSummary {
   const realized = closed.reduce((s, p) => s + (p.pnlBRL ?? 0), 0);
   const deployed = [...open, ...closed].reduce((s, p) => s + p.amountBRL, 0);
   const ranked = [...open, ...closed].map((p) => ({ label: p.label, pnl: positionPnl(p) })).sort((a, b) => b.pnl - a.pnl);
+  const w = ensureWallets(c).wallets![area];
+  const patrimonio = w.cash + pending.reduce((s, p) => s + p.amountBRL, 0) + open.reduce((s, p) => s + positionValue(p), 0);
   return {
+    cash: w.cash,
+    start: w.start,
+    patrimonio,
+    retStart: w.start ? patrimonio / w.start - 1 : 0,
     open: open.length,
     pending: pending.length,
     reserved: pending.reduce((s, p) => s + p.amountBRL, 0),

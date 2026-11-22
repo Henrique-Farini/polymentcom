@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Card, LiveBadge } from "@/components/ui";
-import { areaSummary, positionPnl, positionValue, totalValue, type AreaSummary } from "@/lib/carteira/engine";
+import { areaCash, areaSummary, positionPnl, positionValue, totalValue, type AreaSummary } from "@/lib/carteira/engine";
 import { estimateTax, TAX_LABEL } from "@/lib/carteira/ir";
 import type { Carteira, CarteiraEvent, EquityPoint, Position } from "@/lib/carteira/types";
 import { B3_EQUIVALENT, DEFAULT_UNIVERSE, displaySymbol, execSymbol } from "@/lib/bolsa/universe";
@@ -99,14 +99,14 @@ export default function CarteiraPage() {
         <Card className="border-down/40 p-4">
           <h2 className="text-sm font-semibold">Recomeçar do zero</h2>
           <p className="mb-3 mt-1 text-xs text-muted">Apaga esta carteira de teste (posições e histórico) e cria outra. Depois é só investir de novo.</p>
-          <Criar busy={busy} compact onCreate={(valor, dias) => act({ acao: "nova", valor, dias }).then((ok) => ok && setPanel(null))} />
+          <Criar busy={busy} compact onCreate={(bolsa, poly, dias) => act({ acao: "nova", valorBolsa: bolsa, valorPoly: poly, dias }).then((ok) => ok && setPanel(null))} />
         </Card>
       )}
 
       {err && <p className="rounded-lg border border-down/40 bg-down/10 px-3 py-2 text-sm text-down">{err}</p>}
 
       {!c ? (
-        <Criar busy={busy} onCreate={(valor, dias) => act({ acao: "nova", valor, dias })} />
+        <Criar busy={busy} onCreate={(bolsa, poly, dias) => act({ acao: "nova", valorBolsa: bolsa, valorPoly: poly, dias })} />
       ) : (
         <>
           <Resumo c={c} now={now} />
@@ -119,7 +119,7 @@ export default function CarteiraPage() {
             <EquityChart points={c.equity.map((p) => ({ t: p.t, value: (p.value / (p.base ?? c.startCash)) * c.startCash }))} base={c.startCash} />
           </Card>
 
-          {c.cash >= 1 && <Investir c={c} busy={busy} onAuto={(o) => act({ acao: "auto", ...o })} onOrder={(o) => act({ acao: "ordem", ...o })} />}
+          <Investir c={c} area={area} busy={busy} onAuto={(o) => act({ acao: "auto", ...o })} onOrder={(o) => act({ acao: "ordem", ...o })} />
 
           <AreaTabs area={area} onArea={setArea} c={c} />
           <Posicoes
@@ -146,14 +146,20 @@ export default function CarteiraPage() {
 
 /* ----------------------------- criar ----------------------------- */
 
-function Criar({ busy, onCreate, compact }: { busy: boolean; onCreate: (valor: number, dias: number) => void; compact?: boolean }) {
-  const [valor, setValor] = useState(10_000);
+function Criar({ busy, onCreate, compact }: { busy: boolean; onCreate: (bolsa: number, poly: number, dias: number) => void; compact?: boolean }) {
+  const [bolsa, setBolsa] = useState(1000);
+  const [poly, setPoly] = useState(1000);
   const [dias, setDias] = useState(7);
+  const num = (s: string) => Number(s.replace(/\D/g, "")) || 0;
   const body = (
     <div className="flex flex-wrap items-end gap-3">
       <label className="text-sm">
-        <span className="block text-xs text-muted">Dinheiro fictício (R$)</span>
-        <input className={`${sel} num mt-1 w-36`} inputMode="numeric" value={valor} onChange={(e) => setValor(Number(e.target.value.replace(/\D/g, "")) || 0)} />
+        <span className="block text-xs text-up">▲ Caixa da Bolsa (R$)</span>
+        <input className={`${sel} num mt-1 w-32`} inputMode="numeric" value={bolsa} onChange={(e) => setBolsa(num(e.target.value))} />
+      </label>
+      <label className="text-sm">
+        <span className="block text-xs text-poly">◆ Caixa do Polymarket (R$)</span>
+        <input className={`${sel} num mt-1 w-32`} inputMode="numeric" value={poly} onChange={(e) => setPoly(num(e.target.value))} />
       </label>
       <label className="text-sm">
         <span className="block text-xs text-muted">Duração do teste</span>
@@ -163,7 +169,7 @@ function Criar({ busy, onCreate, compact }: { busy: boolean; onCreate: (valor: n
           ))}
         </select>
       </label>
-      <button type="button" disabled={busy || valor < 100} onClick={() => onCreate(valor, dias)} className="rounded-lg bg-info px-4 py-2 text-sm font-semibold text-black disabled:opacity-40">
+      <button type="button" disabled={busy || bolsa + poly < 100} onClick={() => onCreate(bolsa, poly, dias)} className="rounded-lg bg-info px-4 py-2 text-sm font-semibold text-black disabled:opacity-40">
         {compact ? "Criar nova" : "Criar carteira de teste"}
       </button>
     </div>
@@ -172,11 +178,12 @@ function Criar({ busy, onCreate, compact }: { busy: boolean; onCreate: (valor: n
   return (
     <Card className="border-info/40 p-5">
       <h2 className="text-base font-semibold">Comece com dinheiro de mentira</h2>
-      <p className="mb-4 mt-1 text-sm text-muted">Escolha quanto dinheiro fictício usar e por quanto tempo vai durar o teste. Depois você investe na mão ou deixa o app montar a carteira.</p>
+      <p className="mb-4 mt-1 text-sm text-muted">Cada área tem o próprio caixa: o dinheiro da Bolsa não se mistura com o do Polymarket. Depois você investe na mão ou deixa o app montar.</p>
       {body}
     </Card>
   );
 }
+
 
 /* ----------------------------- resumo ----------------------------- */
 
@@ -204,7 +211,7 @@ function Resumo({ c, now }: { c: Carteira; now: number }) {
       <Card className="p-4">
         <div className="text-xs text-muted">Investido / em caixa</div>
         <div className="num mt-1 text-2xl font-semibold">{brl(invested)}</div>
-        <div className="num text-xs text-muted">{brl(c.cash)} parado em caixa</div>
+        <div className="num text-xs text-muted">em caixa: Bolsa {brl(areaCash(c, "bolsa"))} · Polymarket {brl(areaCash(c, "polymarket"))}</div>
       </Card>
       <Card className="p-4">
         <div className="text-xs text-muted">Fim do teste</div>
@@ -285,27 +292,48 @@ function EquityChart({ points, base }: { points: EquityPoint[]; base: number }) 
 
 function Investir({
   c,
+  area: filter,
   busy,
   onAuto,
   onOrder,
 }: {
   c: Carteira;
+  area: AreaFilter;
   busy: boolean;
   onAuto: (o: Record<string, unknown>) => void;
   onOrder: (o: Record<string, unknown>) => void;
 }) {
   const [conta] = useConta();
+  const [area, setArea] = useState<"bolsa" | "polymarket">(filter === "polymarket" ? "polymarket" : "bolsa");
+  useEffect(() => {
+    if (filter !== "todas") setArea(filter);
+  }, [filter]);
   const [tab, setTab] = useState<"auto" | "manual">("auto");
-  const [partePoly, setPartePoly] = useState(0.1);
   const [stop, setStop] = useState(0);
   const [nAcoes, setNAcoes] = useState(4);
   const daysLeft = c.endsAt ? Math.max(1, Math.round((c.endsAt - Date.now()) / 86_400_000)) : 7;
   const [dias, setDias] = useState(daysLeft);
+  const cash = areaCash(c, area);
+  const poly = area === "polymarket";
 
   return (
-    <Card className="p-4">
+    <Card className={`p-4 ${poly ? "border-poly/40" : "border-up/30"}`}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">Investir {brl(c.cash)} em caixa</h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-lg border border-line bg-card p-0.5 text-xs">
+            {(["bolsa", "polymarket"] as const).map((a) => (
+              <button
+                key={a}
+                type="button"
+                onClick={() => setArea(a)}
+                className={`rounded-md px-3 py-1 font-medium ${area === a ? (a === "polymarket" ? "bg-poly text-white" : "bg-up text-black") : "text-muted hover:text-text"}`}
+              >
+                {a === "bolsa" ? "▲ Bolsa" : "◆ Polymarket"} · {brl(areaCash(c, a))}
+              </button>
+            ))}
+          </div>
+          <h2 className="text-sm font-semibold">Investir o caixa {poly ? "do Polymarket" : "da Bolsa"}</h2>
+        </div>
         <div className="inline-flex rounded-lg border border-line bg-card p-0.5 text-xs">
           {(["auto", "manual"] as const).map((t) => (
             <button key={t} type="button" onClick={() => setTab(t)} className={`rounded-md px-2.5 py-1 font-medium ${tab === t ? "bg-info text-black" : "text-muted hover:text-text"}`}>
@@ -315,27 +343,34 @@ function Investir({
         </div>
       </div>
 
-      {tab === "auto" ? (
+      {cash < 1 ? (
+        <p className="mt-3 text-sm text-muted">
+          Sem dinheiro livre neste caixa. Use <b className="text-text">Editar teste</b> para depositar ou transferir do outro caixa.
+        </p>
+      ) : tab === "manual" ? (
+        <Manual key={area} area={area} cash={cash} busy={busy} defaultDays={daysLeft} defaultStop={poly ? 0 : conta.stop || 0.08} onOrder={onOrder} />
+      ) : poly ? (
         <div className="mt-3 space-y-3">
           <p className="text-sm text-muted">
-            <b className="text-text">Regra nova: um terço em cada parte.</b> Núcleo (BOVA11 e IVVB11, o mercado brasileiro e o americano inteiros), as ações que mais subiram em 12 meses (momento) e as que menos oscilam (baixa volatilidade).
-            Ações americanas entram como BDR e cripto como ETF da B3, sempre em ações inteiras. Foi a regra mais equilibrada no{" "}
-            <Link href="/analise?aba=estrategias" className="text-info hover:underline">teste de 16 anos</Link>. Não usa o seu perfil.
+            <b className="text-text">Regra do azarão:</b> o lado que custa 5–30% em mercados que terminam em 2 a 9 dias, até 15 apostas, cada uma com no máximo 2% do patrimônio do
+            Polymarket, seguradas até o resultado. Foi a regra que melhor se saiu no{" "}
+            <Link href="/polymarket/oportunidades" className="text-info hover:underline">teste com ~1.100 mercados</Link>. Perde cerca de 3 em cada 4 apostas; o lucro vem das que acertam.
+          </p>
+          <button type="button" disabled={busy} onClick={() => onAuto({ area, dias: 7, stop: 0, nAcoes: 4 })} className="rounded-lg bg-poly px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">
+            {busy ? "Montando…" : "Fazer as apostas"}
+          </button>
+        </div>
+      ) : (
+        <div className="mt-3 space-y-3">
+          <p className="text-sm text-muted">
+            <b className="text-text">Regra nova: um terço em cada parte.</b> Núcleo (BOVA11 e IVVB11), as ações que mais subiram em 12 meses (momento) e as que menos oscilam (baixa
+            volatilidade). Ações americanas entram como BDR, sempre em ações inteiras. Foi a regra mais equilibrada no{" "}
+            <Link href="/analise?aba=estrategias" className="text-info hover:underline">teste de 16 anos</Link>.
           </p>
           <div className="flex flex-wrap items-end gap-3 text-sm">
             <Lbl t="Ações por parte">
               <select className={sel} value={nAcoes} onChange={(e) => setNAcoes(Number(e.target.value))}>
                 {[3, 4, 5, 6].map((n) => <option key={n}>{n}</option>)}
-              </select>
-            </Lbl>
-            <Lbl t="Parte no Polymarket">
-              <select className={sel} value={partePoly} onChange={(e) => setPartePoly(Number(e.target.value))}>
-                <option value={0}>Nada</option>
-                <option value={0.05}>5%</option>
-                <option value={0.1}>10%</option>
-                <option value={0.2}>20%</option>
-                <option value={0.5}>50%</option>
-                <option value={1}>100% (só Polymarket)</option>
               </select>
             </Lbl>
             <Lbl t="Stop nas ações">
@@ -348,23 +383,11 @@ function Investir({
                 {[...new Set([daysLeft, 3, 5, 7, 14, 30])].sort((a, b) => a - b).map((d) => <option key={d} value={d}>{d} dias</option>)}
               </select>
             </Lbl>
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => onAuto({ partePoly, nAcoes, stop, dias })}
-              className="rounded-lg bg-info px-4 py-2 font-semibold text-black disabled:opacity-40"
-            >
+            <button type="button" disabled={busy} onClick={() => onAuto({ area, nAcoes, stop, dias })} className="rounded-lg bg-up px-4 py-2 font-semibold text-black disabled:opacity-40">
               {busy ? "Montando…" : "Montar carteira"}
             </button>
           </div>
-          <p className="text-xs text-muted">
-            Polymarket: usa a regra que melhor se saiu no teste com ~1.100 mercados resolvidos: azarões (5–30%) que terminam em 2 a 9 dias, até 10 apostas pequenas, seguradas até o resultado.
-            Perde cerca de 3 em cada 4 apostas; o lucro vem das poucas que acertam. Detalhes em{" "}
-            <Link href="/polymarket/oportunidades" className="text-info hover:underline">Polymarket → Oportunidades</Link>.
-          </p>
         </div>
-      ) : (
-        <Manual cash={c.cash} busy={busy} defaultDays={daysLeft} defaultStop={conta.stop || 0.08} onOrder={onOrder} />
       )}
     </Card>
   );
@@ -379,24 +402,40 @@ function Lbl({ t, children }: { t: string; children: React.ReactNode }) {
   );
 }
 
-function Manual({ cash, busy, defaultDays, defaultStop, onOrder }: { cash: number; busy: boolean; defaultDays: number; defaultStop: number; onOrder: (o: Record<string, unknown>) => void }) {
-  const [area, setArea] = useState<"bolsa" | "polymarket">("bolsa");
+function Manual({
+  area,
+  cash,
+  busy,
+  defaultDays,
+  defaultStop,
+  onOrder,
+}: {
+  area: "bolsa" | "polymarket";
+  cash: number;
+  busy: boolean;
+  defaultDays: number;
+  defaultStop: number;
+  onOrder: (o: Record<string, unknown>) => void;
+}) {
   const markets = usePolling<{ markets: PolyMarket[]; at: number }>(area === "polymarket" ? "/api/polymarket/markets" : null, 60_000);
   const bolsaOpts = DEFAULT_UNIVERSE.filter((u) => !u.symbol.startsWith("^") && !u.symbol.endsWith("=X"));
   const polyOpts = useMemo(
-    () => (markets.data?.markets ?? []).filter((m) => m.probability > 0.03 && m.probability < 0.97).slice(0, 40),
+    () => (markets.data?.markets ?? []).filter((m) => m.probability > 0.03 && m.probability < 0.97).slice(0, 60),
     [markets.data],
   );
-  const [ref, setRef] = useState(bolsaOpts[0].symbol);
-  const [valor, setValor] = useState(Math.min(1000, Math.floor(cash)));
+  const [ref, setRef] = useState(area === "bolsa" ? bolsaOpts[0].symbol : "");
+  const [side, setSide] = useState<"sim" | "nao">("sim");
+  const [valor, setValor] = useState(Math.min(area === "bolsa" ? 1000 : 20, Math.floor(cash)));
   const [stop, setStop] = useState(defaultStop);
   const [dias, setDias] = useState(defaultDays);
 
   useEffect(() => {
-    if (area === "bolsa") setRef(bolsaOpts[0].symbol);
-    else if (polyOpts[0]) setRef(polyOpts[0].id);
+    if (area === "polymarket" && !ref && polyOpts[0]) setRef(polyOpts[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [area, polyOpts.length]);
+  }, [polyOpts.length]);
+
+  const m = area === "polymarket" ? polyOpts.find((x) => x.id === ref) : undefined;
+  const price = m ? (side === "sim" ? m.bestAsk ?? m.probability : 1 - (m.bestBid ?? m.probability)) : null;
 
   function send() {
     if (area === "bolsa") {
@@ -404,22 +443,15 @@ function Manual({ cash, busy, defaultDays, defaultStop, onOrder }: { cash: numbe
       const exec = execSymbol(ref);
       const eqv = B3_EQUIVALENT[ref];
       onOrder({ area, ref: exec, label: displaySymbol(exec), sub: eqv ? `${eqv.note} · ${u.name}` : u.name, currency: "BRL", valor, stop, dias, wholeShares: true });
-    } else {
-      const m = polyOpts.find((x) => x.id === ref);
-      if (!m) return;
-      onOrder({ area, ref, label: `${m.outcomes[0] ?? "Sim"} · ${m.question}`, sub: m.category, valor, stop, dias });
+    } else if (m) {
+      const name = side === "sim" ? m.outcomes[0] ?? "Sim" : m.outcomes[1] ?? "Não";
+      onOrder({ area, ref, side, label: `${name} · ${m.question}`, sub: `${m.category} · escolha manual, até o resultado`, valor, stop: 0, dias: 60 });
     }
   }
 
   return (
     <div className="mt-3 flex flex-wrap items-end gap-3 text-sm">
-      <Lbl t="Onde">
-        <select className={sel} value={area} onChange={(e) => setArea(e.target.value as "bolsa" | "polymarket")}>
-          <option value="bolsa">Bolsa</option>
-          <option value="polymarket">Polymarket</option>
-        </select>
-      </Lbl>
-      <Lbl t={area === "bolsa" ? "Ativo" : "Mercado (compra o primeiro resultado)"}>
+      <Lbl t={area === "bolsa" ? "Ativo" : "Mercado"}>
         <select className={`${sel} max-w-md`} value={ref} onChange={(e) => setRef(e.target.value)}>
           {area === "bolsa"
             ? bolsaOpts.map((u) => (
@@ -428,28 +460,51 @@ function Manual({ cash, busy, defaultDays, defaultStop, onOrder }: { cash: numbe
                   {B3_EQUIVALENT[u.symbol] ? ` (${B3_EQUIVALENT[u.symbol].note})` : ""}
                 </option>
               ))
-            : polyOpts.map((m) => <option key={m.id} value={m.id}>{Math.round(m.probability * 100)}% · {m.question}</option>)}
+            : polyOpts.map((x) => <option key={x.id} value={x.id}>{Math.round(x.probability * 100)}% · {x.question}</option>)}
         </select>
       </Lbl>
-      <Lbl t="Valor (R$)">
+      {area === "polymarket" && m && (
+        <Lbl t="Apostar em">
+          <select className={sel} value={side} onChange={(e) => setSide(e.target.value as "sim" | "nao")}>
+            <option value="sim">{m.outcomes[0] ?? "Sim"} ({Math.round((m.bestAsk ?? m.probability) * 100)}¢)</option>
+            <option value="nao">{m.outcomes[1] ?? "Não"} ({Math.round((1 - (m.bestBid ?? m.probability)) * 100)}¢)</option>
+          </select>
+        </Lbl>
+      )}
+      <Lbl t={`Valor (R$) · livre ${brl(cash)}`}>
         <input className={`${sel} num w-28`} inputMode="numeric" value={valor} onChange={(e) => setValor(Number(e.target.value.replace(/\D/g, "")) || 0)} />
       </Lbl>
-      <Lbl t="Stop">
-        <select className={sel} value={stop} onChange={(e) => setStop(Number(e.target.value))}>
-          {[0, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2, 0.3].map((s) => <option key={s} value={s}>{s ? `${Math.round(s * 100)}%` : "sem stop"}</option>)}
-        </select>
-      </Lbl>
-      <Lbl t="Segurar por">
-        <select className={sel} value={dias} onChange={(e) => setDias(Number(e.target.value))}>
-          {[...new Set([defaultDays, 1, 3, 5, 7, 14, 30])].sort((a, b) => a - b).map((d) => <option key={d} value={d}>{d} dias</option>)}
-        </select>
-      </Lbl>
-      <button type="button" disabled={busy || valor <= 0 || valor > cash} onClick={send} className="rounded-lg bg-info px-4 py-2 font-semibold text-black disabled:opacity-40">
-        Comprar
+      {area === "bolsa" && (
+        <>
+          <Lbl t="Stop">
+            <select className={sel} value={stop} onChange={(e) => setStop(Number(e.target.value))}>
+              {[0, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2].map((s) => <option key={s} value={s}>{s ? `${Math.round(s * 100)}%` : "sem stop"}</option>)}
+            </select>
+          </Lbl>
+          <Lbl t="Segurar por">
+            <select className={sel} value={dias} onChange={(e) => setDias(Number(e.target.value))}>
+              {[...new Set([defaultDays, 1, 3, 5, 7, 14, 30])].sort((a, b) => a - b).map((d) => <option key={d} value={d}>{d} dias</option>)}
+            </select>
+          </Lbl>
+        </>
+      )}
+      <button
+        type="button"
+        disabled={busy || valor <= 0 || valor > cash || (area === "polymarket" && !m)}
+        onClick={send}
+        className={`rounded-lg px-4 py-2 font-semibold disabled:opacity-40 ${area === "polymarket" ? "bg-poly text-white" : "bg-up text-black"}`}
+      >
+        {area === "polymarket" ? "Apostar" : "Comprar"}
       </button>
+      {price !== null && valor > 0 && (
+        <p className="w-full text-xs text-muted">
+          Se acertar, recebe <b className="text-up">{brl(valor / price)}</b>; se errar, perde os {brl(valor)}. Segura até o resultado.
+        </p>
+      )}
     </div>
   );
 }
+
 
 /* ----------------------------- posições ----------------------------- */
 
@@ -479,7 +534,7 @@ function Posicoes({ c, area, now, busy, onClose, onEdit }: { c: Carteira; area: 
           </thead>
           <tbody className="focus-group">
             {open.map((p) => (
-              <PosRow key={p.id} p={p} now={now} busy={busy} cash={c.cash} onClose={onClose} onEdit={onEdit} />
+              <PosRow key={p.id} p={p} now={now} busy={busy} cash={areaCash(c, p.area)} onClose={onClose} onEdit={onEdit} />
             ))}
           </tbody>
         </table>
@@ -619,32 +674,73 @@ function EditRow({
   );
 }
 
-function EditarTeste({ c, busy, onSave }: { c: Carteira; busy: boolean; onSave: (o: { dias?: number; deposito?: number }) => void }) {
+function EditarTeste({ c, busy, onSave }: { c: Carteira; busy: boolean; onSave: (o: Record<string, unknown>) => void }) {
   const curDays = c.endsAt ? Math.round((c.endsAt - c.createdAt) / 86_400_000) : 0;
   const [dias, setDias] = useState(curDays || 7);
   const [deposito, setDeposito] = useState(0);
+  const [depArea, setDepArea] = useState<"bolsa" | "polymarket">("polymarket");
+  const [de, setDe] = useState<"bolsa" | "polymarket">("bolsa");
+  const [valorT, setValorT] = useState(0);
+  const para = de === "bolsa" ? "polymarket" : "bolsa";
+  const num = (s: string) => Number(s.replace(/\D/g, "")) || 0;
+  const nome = (a: "bolsa" | "polymarket") => (a === "bolsa" ? "Bolsa" : "Polymarket");
   return (
     <Card className="border-info/40 p-4">
       <h2 className="text-sm font-semibold">Editar o teste</h2>
-      <p className="mb-3 mt-1 text-xs text-muted">Mude a duração ou coloque mais dinheiro fictício. Para mudar uma posição, use “Editar” na linha dela.</p>
-      <div className="flex flex-wrap items-end gap-3 text-sm">
-        <Lbl t="Duração total do teste">
-          <select className={sel} value={dias} onChange={(e) => setDias(Number(e.target.value))}>
-            {[...new Set([curDays || 7, 7, 14, 30, 90])].sort((a, b) => a - b).map((d) => (
-              <option key={d} value={d}>{d} dias</option>
-            ))}
-          </select>
-        </Lbl>
-        <Lbl t="Adicionar dinheiro fictício (R$)">
-          <input className={`${sel} num w-36`} inputMode="numeric" value={deposito} onChange={(e) => setDeposito(Number(e.target.value.replace(/\D/g, "")) || 0)} />
-        </Lbl>
-        <button type="button" disabled={busy} onClick={() => onSave({ ...(dias !== curDays ? { dias } : {}), ...(deposito > 0 ? { deposito } : {}) })} className="rounded-lg bg-info px-4 py-2 font-semibold text-black disabled:opacity-40">
-          Salvar
-        </button>
+      <p className="mb-3 mt-1 text-xs text-muted">
+        Depósitos e transferências não contam como lucro. Caixa livre agora: Bolsa {brl(areaCash(c, "bolsa"))} · Polymarket {brl(areaCash(c, "polymarket"))}.
+      </p>
+      <div className="grid gap-4 lg:grid-cols-3">
+        <div className="space-y-2 text-sm">
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted">Duração</div>
+          <div className="flex items-end gap-2">
+            <select className={sel} value={dias} onChange={(e) => setDias(Number(e.target.value))}>
+              {[...new Set([curDays || 7, 7, 14, 30, 90])].sort((a, b) => a - b).map((d) => (
+                <option key={d} value={d}>{d} dias</option>
+              ))}
+            </select>
+            <button type="button" disabled={busy || dias === curDays} onClick={() => onSave({ dias })} className="rounded-lg border border-line px-3 py-1.5 hover:border-info disabled:opacity-40">
+              Salvar
+            </button>
+          </div>
+        </div>
+        <div className="space-y-2 text-sm">
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted">Depositar dinheiro fictício</div>
+          <div className="flex flex-wrap items-end gap-2">
+            <input className={`${sel} num w-28`} inputMode="numeric" value={deposito} onChange={(e) => setDeposito(num(e.target.value))} />
+            <select className={sel} value={depArea} onChange={(e) => setDepArea(e.target.value as "bolsa" | "polymarket")}>
+              <option value="bolsa">no caixa da Bolsa</option>
+              <option value="polymarket">no caixa do Polymarket</option>
+            </select>
+            <button type="button" disabled={busy || deposito <= 0} onClick={() => onSave({ deposito, area: depArea })} className="rounded-lg bg-info px-3 py-1.5 font-semibold text-black disabled:opacity-40">
+              Depositar
+            </button>
+          </div>
+        </div>
+        <div className="space-y-2 text-sm">
+          <div className="text-xs font-semibold uppercase tracking-wider text-muted">Transferir entre caixas</div>
+          <div className="flex flex-wrap items-end gap-2">
+            <input className={`${sel} num w-24`} inputMode="numeric" value={valorT} onChange={(e) => setValorT(num(e.target.value))} />
+            <select className={sel} value={de} onChange={(e) => setDe(e.target.value as "bolsa" | "polymarket")}>
+              <option value="bolsa">da Bolsa → Polymarket</option>
+              <option value="polymarket">do Polymarket → Bolsa</option>
+            </select>
+            <button
+              type="button"
+              disabled={busy || valorT <= 0 || valorT > areaCash(c, de)}
+              onClick={() => onSave({ transferir: { de, para, valor: valorT } })}
+              className="rounded-lg border border-line px-3 py-1.5 hover:border-info disabled:opacity-40"
+            >
+              Transferir
+            </button>
+          </div>
+          <p className="text-[11px] text-muted">Só o dinheiro livre de {nome(de)} ({brl(areaCash(c, de))}) pode ir para {nome(para)}.</p>
+        </div>
       </div>
     </Card>
   );
 }
+
 
 const REASON: Record<string, string> = { stop: "Stop", prazo: "Prazo", manual: "Manual", resolvido: "Resolvido" };
 
@@ -862,7 +958,8 @@ function AreaCard({ title, icon, color, accent, s, spark, active, onClick, extra
   onClick: () => void;
   extra?: React.ReactNode;
 }) {
-  const t = s.total;
+  // Resultado da área = patrimônio dela − dinheiro colocado nela (depósitos e transferências não contam).
+  const t = s.patrimonio - s.start;
   return (
     <button
       type="button"
@@ -876,15 +973,18 @@ function AreaCard({ title, icon, color, accent, s, spark, active, onClick, extra
         </h2>
         <span className="text-[11px] text-muted">{active ? "filtrando abaixo" : "clique para filtrar"}</span>
       </div>
-      <div className="mt-2 flex items-baseline gap-3">
-        <span className={`num text-2xl font-semibold ${t > 0.005 ? "text-up" : t < -0.005 ? "text-down" : "text-muted"}`}>
+      <div className="mt-2 flex flex-wrap items-baseline gap-x-3">
+        <span className={`num whitespace-nowrap text-2xl font-semibold ${t > 0.005 ? "text-up" : t < -0.005 ? "text-down" : "text-muted"}`}>
           {t >= 0 ? "+" : ""}
           {brl(t)}
         </span>
-        <span className={`num text-sm ${t > 0.005 ? "text-up" : t < -0.005 ? "text-down" : "text-muted"}`}>{pc(s.ret)}</span>
+        <span className={`num text-sm ${t > 0.005 ? "text-up" : t < -0.005 ? "text-down" : "text-muted"}`}>{pc(s.retStart)}</span>
+        <span className="num w-full text-xs text-muted">patrimônio {brl(s.patrimonio)} sobre {brl(s.start)} colocados</span>
       </div>
       <AreaSpark points={spark} color={color} />
       <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        <div className="flex justify-between"><dt className="text-muted">Caixa livre</dt><dd className="num font-semibold">{brl(s.cash)}</dd></div>
+        <div className="flex justify-between"><dt className="text-muted">Dinheiro colocado</dt><dd className="num">{brl(s.start)}</dd></div>
         <div className="flex justify-between"><dt className="text-muted">Em aberto</dt><dd className={`num ${s.unrealized >= 0 ? "text-up" : "text-down"}`}>{s.unrealized >= 0 ? "+" : ""}{brl(s.unrealized)}</dd></div>
         <div className="flex justify-between"><dt className="text-muted">Já realizado</dt><dd className={`num ${s.realized >= 0 ? "text-up" : "text-down"}`}>{s.realized >= 0 ? "+" : ""}{brl(s.realized)}</dd></div>
         <div className="flex justify-between"><dt className="text-muted">Investido</dt><dd className="num">{brl(s.invested)}</dd></div>

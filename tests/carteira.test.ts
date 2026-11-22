@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { allocateWholeShares, applyDividend, applyQuote, areaSummary, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, positionPnl, recordEquity, totalValue } from "@/lib/carteira/engine";
+import { allocateWholeShares, applyDividend, applyQuote, areaCash, areaSummary, ensureWallets, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, positionPnl, recordEquity, totalValue } from "@/lib/carteira/engine";
 
 const T0 = 1_700_000_000_000;
 const order = { area: "bolsa" as const, ref: "PETR4.SA", label: "PETR4", sub: "Petrobras", currency: "BRL" as const, amountBRL: 1000, stopPct: 0.08, holdDays: 7 };
@@ -59,7 +59,7 @@ describe("carteira de teste", () => {
   });
 
   it("não deixa gastar mais que o saldo e cancela pendente devolvendo o dinheiro", () => {
-    const c = emptyCarteira(1000, T0);
+    const c = emptyCarteira(1000, T0, 7, { bolsa: 1000, polymarket: 0 });
     expect(() => placeOrder(c, { ...order, amountBRL: 2000 }, T0)).toThrow();
     const p = placeOrder(c, order, T0);
     closeManual(c, p.id, T0 + 1);
@@ -67,7 +67,7 @@ describe("carteira de teste", () => {
   });
 
   it("edita ordem pendente (valor, stop, prazo) e só stop/prazo depois da compra", () => {
-    const c = emptyCarteira(1000, T0);
+    const c = emptyCarteira(1000, T0, 7, { bolsa: 1000, polymarket: 0 });
     const p = placeOrder(c, { ...order, amountBRL: 700 }, T0);
     editPosition(c, p.id, { amountBRL: 400, stopPct: 0.1, holdDays: 3 }, T0 + 1);
     expect(c.cash).toBe(600);
@@ -81,7 +81,7 @@ describe("carteira de teste", () => {
   });
 
   it("muda a duração e deposita mais dinheiro fictício", () => {
-    const c = emptyCarteira(1000, T0);
+    const c = emptyCarteira(1000, T0, 7, { bolsa: 1000, polymarket: 0 });
     editCarteira(c, { dias: 14, deposito: 9000 }, T0 + 1);
     expect(c.endsAt).toBe(T0 + 14 * 86_400_000);
     expect(c.cash).toBe(10_000);
@@ -89,7 +89,7 @@ describe("carteira de teste", () => {
   });
 
   it("grava o patrimônio sem repetir pontos muito próximos", () => {
-    const c = emptyCarteira(1000, T0);
+    const c = emptyCarteira(1000, T0, 7, { bolsa: 1000, polymarket: 0 });
     recordEquity(c, T0 + 1000);
     expect(c.equity.length).toBe(1);
     recordEquity(c, T0 + 11 * 60_000);
@@ -99,7 +99,7 @@ describe("carteira de teste", () => {
 
 describe("realismo da B3", () => {
   it("compra só ações inteiras e devolve o troco", () => {
-    const c = emptyCarteira(1000, T0);
+    const c = emptyCarteira(1000, T0, 7, { bolsa: 1000, polymarket: 0 });
     const p = placeOrder(c, { ...order, amountBRL: 175, wholeShares: true }, T0);
     applyQuote(c, p, { price: 40, time: T0 + 1 }, 1, T0 + 1);
     expect(p.qty).toBe(4);
@@ -176,5 +176,49 @@ describe("areaSummary", () => {
     expect(sp.wins).toBe(1);
     expect(sp.ret).toBeCloseTo(3);
     expect(pend.status).toBe("pendente");
+  });
+});
+
+describe("caixas separados", () => {
+  it("a Bolsa não usa o dinheiro do Polymarket, e vice-versa", () => {
+    const c = emptyCarteira(2000, T0, 7, { bolsa: 1000, polymarket: 1000 });
+    expect(() => placeOrder(c, { ...order, amountBRL: 1500 }, T0)).toThrow(/Bolsa/);
+    placeOrder(c, { ...order, amountBRL: 1000 }, T0);
+    expect(areaCash(c, "bolsa")).toBe(0);
+    expect(areaCash(c, "polymarket")).toBe(1000);
+    expect(c.cash).toBe(1000);
+  });
+
+  it("o lucro volta para o caixa da área certa", () => {
+    const c = emptyCarteira(2000, T0, 7, { bolsa: 1000, polymarket: 1000 });
+    const p = placeOrder(c, { ...order, area: "polymarket", ref: "9", currency: "USD", stopPct: null, amountBRL: 500 }, T0);
+    applyQuote(c, p, { price: 0.5, time: T0 + 1 }, 5, T0 + 1);
+    applyQuote(c, p, { price: 1, time: T0 + 2, resolved: true }, 5, T0 + 2);
+    expect(areaCash(c, "polymarket")).toBeCloseTo(1500);
+    expect(areaCash(c, "bolsa")).toBe(1000);
+    expect(areaSummary(c, "polymarket").retStart).toBeCloseTo(0.5);
+  });
+
+  it("depósito e transferência não contam como lucro", () => {
+    const c = emptyCarteira(2000, T0, 7, { bolsa: 1000, polymarket: 1000 });
+    editCarteira(c, { deposito: 500, area: "polymarket" }, T0 + 1);
+    editCarteira(c, { transferir: { de: "bolsa", para: "polymarket", valor: 300 } }, T0 + 2);
+    expect(areaCash(c, "bolsa")).toBe(700);
+    expect(areaCash(c, "polymarket")).toBe(1800);
+    expect(areaSummary(c, "bolsa").retStart).toBeCloseTo(0);
+    expect(areaSummary(c, "polymarket").retStart).toBeCloseTo(0);
+    expect(() => editCarteira(c, { transferir: { de: "bolsa", para: "polymarket", valor: 5000 } })).toThrow();
+  });
+
+  it("converte carteira antiga (caixa único) sem mudar o total", () => {
+    const c = emptyCarteira(2000, T0, 7, { bolsa: 1000, polymarket: 1000 });
+    placeOrder(c, { ...order, amountBRL: 800 }, T0);
+    placeOrder(c, { ...order, area: "polymarket", ref: "9", currency: "USD", stopPct: null, amountBRL: 300 }, T0);
+    const old = JSON.parse(JSON.stringify(c));
+    delete old.wallets;
+    ensureWallets(old);
+    expect(old.wallets.bolsa.cash).toBeCloseTo(200);
+    expect(old.wallets.polymarket.cash).toBeCloseTo(700);
+    expect(old.wallets.bolsa.cash + old.wallets.polymarket.cash).toBeCloseTo(c.cash);
   });
 });

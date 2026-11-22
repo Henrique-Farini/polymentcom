@@ -47,7 +47,7 @@ export async function POST(req: Request) {
     let c;
     switch (b.acao) {
       case "nova":
-        c = await novaCarteira(num(b.valor, 100, 10_000_000, 10_000), b.dias ? num(b.dias, 1, 365, 7) : null);
+        c = await novaCarteira(num(b.valorBolsa ?? b.valor, 0, 10_000_000, 1000), num(b.valorPoly, 0, 10_000_000, 0), b.dias ? num(b.dias, 1, 365, 7) : null);
         break;
       case "ordem": {
         const area = b.area === "polymarket" ? "polymarket" : "bolsa";
@@ -69,7 +69,7 @@ export async function POST(req: Request) {
       }
       case "auto":
         c = await montarAuto({
-          partePoly: num(b.partePoly, 0, 1, 0.1),
+          area: b.area === "polymarket" ? "polymarket" : "bolsa",
           nAcoes: Math.round(num(b.nAcoes ?? b.nMomento, 1, 8, 4)),
           stop: stopOf(b.stop),
           holdDays: num(b.dias, 1, 365, 7),
@@ -89,6 +89,15 @@ export async function POST(req: Request) {
         c = await editarTeste({
           dias: b.dias === undefined ? undefined : b.dias ? num(b.dias, 1, 365, 7) : null,
           deposito: b.deposito ? num(b.deposito, 1, 10_000_000, 0) : undefined,
+          area: b.area === "polymarket" ? "polymarket" : "bolsa",
+          transferir:
+            b.transferir && typeof b.transferir === "object"
+              ? {
+                  de: (b.transferir as { de?: string }).de === "polymarket" ? "polymarket" : "bolsa",
+                  para: (b.transferir as { para?: string }).para === "polymarket" ? "polymarket" : "bolsa",
+                  valor: num((b.transferir as { valor?: unknown }).valor, 0, 10_000_000, 0),
+                }
+              : undefined,
         });
         break;
       default:

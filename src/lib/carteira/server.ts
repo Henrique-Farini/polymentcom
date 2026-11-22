@@ -7,7 +7,7 @@ import { CORE_ETFS, MOMENTUM_UNIVERSE, displaySymbol } from "@/lib/bolsa/univers
 import { pickLongshots, pickRegraNova } from "@/lib/picks";
 import { getMarketQuote, getMarkets } from "@/lib/polymarket/server";
 import { DEFAULT_POLY_SETTINGS } from "@/lib/score/types";
-import { allocateWholeShares, applyDividend, applyQuote, brl, totalValue, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
+import { allocateWholeShares, applyDividend, applyQuote, areaCash, areaSummary, brl, ensureWallets, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
 import type { Carteira, Position, Quote } from "./types";
 
 /**
@@ -33,7 +33,7 @@ function withLock<T>(fn: () => Promise<T>): Promise<T> {
 
 async function load(): Promise<Carteira | null> {
   try {
-    return JSON.parse(await fs.readFile(FILE, "utf8")) as Carteira;
+    return ensureWallets(JSON.parse(await fs.readFile(FILE, "utf8")) as Carteira);
   } catch {
     return null;
   }
@@ -144,9 +144,9 @@ if (g.__carteiraTimer) {
 
 /* ----------------------------- ações ----------------------------- */
 
-export function novaCarteira(cash: number, days: number | null) {
+export function novaCarteira(bolsa: number, polymarket: number, days: number | null) {
   return withLock(async () => {
-    const c = emptyCarteira(cash, Date.now(), days);
+    const c = emptyCarteira(bolsa + polymarket, Date.now(), days, { bolsa, polymarket });
     await save(c);
     return c;
   });
@@ -186,7 +186,7 @@ export async function editar(id: string, e: PositionEdit) {
   return checkNow();
 }
 
-export async function editarTeste(e: { dias?: number | null; deposito?: number }) {
+export async function editarTeste(e: Parameters<typeof editCarteira>[1]) {
   await withLock(async () => {
     const c = await load();
     if (!c) throw new Error("Sem carteira");
@@ -198,8 +198,8 @@ export async function editarTeste(e: { dias?: number | null; deposito?: number }
 }
 
 export interface AutoOptions {
-  /** Fração do dinheiro para o Polymarket (0 a 0.3). */
-  partePoly: number;
+  /** Qual caixa investir: cada área tem o próprio dinheiro. */
+  area: "bolsa" | "polymarket";
   /** Quantas ações em cada parte (momento e baixa volatilidade). */
   nAcoes: number;
   /** Stop só nas ações (null = sem stop; o backtest mostrou que stop piora). */
@@ -218,11 +218,12 @@ const CORE_INFO: Record<string, string> = { "BOVA11.SA": "ETF Ibovespa", "IVVB11
 export async function montarAuto(o: AutoOptions) {
   const c0 = await load();
   if (!c0) throw new Error("Crie a carteira primeiro");
-  const cash = c0.cash;
+  const bolsaCash = o.area === "bolsa" ? areaCash(c0, "bolsa") : 0;
+  const polyBudget = o.area === "polymarket" ? areaCash(c0, "polymarket") : 0;
 
   const [stats, markets] = await Promise.all([
     getBolsaAnalysis([...MOMENTUM_UNIVERSE, ...CORE_ETFS]).then((r) => r.value.assets),
-    o.partePoly > 0 ? getMarkets().then((r) => r.value) : Promise.resolve([]),
+    o.area === "polymarket" ? getMarkets().then((r) => r.value) : Promise.resolve([]),
   ]);
   const { momentum: mom, lowVol, core } = pickRegraNova(stats, MOMENTUM_UNIVERSE, CORE_ETFS, o.nAcoes);
 
@@ -241,9 +242,8 @@ export async function montarAuto(o: AutoOptions) {
   // Polymarket: só o que termina antes do prazo acabar.
 
   // Regra do Polymarket: azarões (5–30%) em mercados que terminam no prazo, muitas apostas pequenas, até o resultado.
-  const polyBudget = Math.floor(cash * o.partePoly);
   const polyPicks =
-    o.partePoly > 0
+    o.area === "polymarket"
       ? pickLongshots(
           markets.filter((m) => !c0.positions.some((p) => p.area === "polymarket" && p.status !== "fechada" && p.ref === m.id)),
           DEFAULT_POLY_SETTINGS,
@@ -252,9 +252,9 @@ export async function montarAuto(o: AutoOptions) {
       : [];
   // Tamanho de cada aposta: no máximo 2% do patrimônio (¼ de Kelly com a taxa de acerto histórica).
   // O que sobrar do orçamento fica em caixa: azarão exige muitas apostas pequenas, nunca poucas grandes.
-  const stake = polyPicks.length ? Math.max(5, Math.min(polyBudget / polyPicks.length, 0.02 * totalValue(c0))) : 0;
+  // Cada aposta: até 2% do patrimônio do caixa do Polymarket (¼ de Kelly). O resto fica em caixa.
+  const stake = polyPicks.length ? Math.max(5, Math.min(polyBudget / polyPicks.length, 0.02 * areaSummary(c0, "polymarket").patrimonio)) : 0;
   const polyCash = Math.min(polyBudget, stake * polyPicks.length);
-  const bolsaCash = o.partePoly >= 1 ? 0 : cash - polyBudget;
 
   const bySym = new Map(stats.map((s) => [s.symbol, s]));
   const alloc = allocateWholeShares(
@@ -307,7 +307,7 @@ export async function montarAuto(o: AutoOptions) {
           : "",
         polyCash
           ? `Polymarket (azarões): ${polyPicks.length} apostas de ${brl(stake)} (até 2% do patrimônio cada), somando ${brl(polyCash)}, seguradas até o resultado.`
-          : o.partePoly > 0
+          : o.area === "polymarket"
             ? "Polymarket: nenhum azarão novo dentro da regra agora."
             : "",
         skipped.length ? `Ficaram de fora por não caber nem 1 ação: ${skipped.join(", ")}.` : "",
