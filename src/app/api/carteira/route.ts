@@ -73,6 +73,7 @@ export async function POST(req: Request) {
           nAcoes: Math.round(num(b.nAcoes ?? b.nMomento, 1, 8, 4)),
           stop: stopOf(b.stop),
           holdDays: num(b.dias, 1, 365, 7),
+          antecedencia: typeof b.antecedencia === "string" ? b.antecedencia.slice(0, 20) : undefined,
         });
         break;
       case "fechar":

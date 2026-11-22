@@ -7,7 +7,8 @@ import { Termo } from "@/components/Termo";
 import { Card, LiveBadge } from "@/components/ui";
 import { usePolling, useStored } from "@/lib/client/hooks";
 import { usePolySettings } from "@/lib/client/settings";
-import { pickLongshots } from "@/lib/picks";
+import { LeadPicker } from "@/components/LeadPicker";
+import { leadOf, pickLongshots } from "@/lib/picks";
 import type { ArbOpportunity } from "@/lib/polymarket/arbitragem";
 import type { PolyBacktest, RuleStat } from "@/lib/polymarket/backtest";
 import type { PolyMarket } from "@/lib/polymarket/types";
@@ -35,6 +36,8 @@ export default function OportunidadesPage() {
   const live = usePolling<{ markets: PolyMarket[]; at: number }>("/api/polymarket/markets", 30_000);
   const [settings] = usePolySettings();
   const [banca, setBanca] = useStored<number>("radar:poly:banca", 1000);
+  const [antecedencia, setAntecedencia] = useStored<string>("radar:poly:antecedencia", "qualquer");
+  const lead = leadOf(antecedencia);
 
   const best = useMemo(() => {
     if (!bt.data) return null;
@@ -52,9 +55,9 @@ export default function OportunidadesPage() {
 
   const now = Date.now();
   const picks = useMemo(
-    () => (live.data ? pickLongshots(live.data.markets, settings, { minDays: 2, maxDays: 9, n: 12, now }) : []),
+    () => (live.data ? pickLongshots(live.data.markets, settings, { minDays: lead.minDays, maxDays: lead.maxDays, n: 12, now }) : []),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [live.data, settings],
+    [live.data, settings, lead],
   );
 
   return (
@@ -99,11 +102,12 @@ export default function OportunidadesPage() {
       <Card className="overflow-hidden">
         <div className="flex flex-wrap items-end justify-between gap-3 border-b border-line px-4 py-3">
           <div>
-            <h2 className="text-sm font-semibold">Agora: azarões que terminam em 2 a 9 dias</h2>
+            <h2 className="text-sm font-semibold">Agora: azarões ({lead.label.replace(" (melhor no teste)", "")})</h2>
             <p className="text-xs text-muted">
               Seguem a melhor regra do teste. Cada um perde na maioria das vezes; o resultado vem de fazer várias apostas pequenas. Spread até 4¢ e <Termo k="liquidez" /> mínima
-              das configurações.
+              das configurações. Em jogos, conta o horário de início da partida.
             </p>
+            <LeadPicker value={antecedencia} onChange={setAntecedencia} className="mt-2" />
           </div>
           <label className="text-xs text-muted">
             Sua banca (R$){" "}
@@ -126,7 +130,7 @@ export default function OportunidadesPage() {
                 <th className="px-3 py-2 text-left font-medium">Mercado</th>
                 <th className="px-2 py-2 text-left font-medium">Apostar em</th>
                 <th className="px-2 py-2 text-right font-medium">Preço</th>
-                <th className="px-2 py-2 text-right font-medium">Termina em</th>
+                <th className="px-2 py-2 text-right font-medium">Começa / acontece em</th>
                 <th className="px-2 py-2 text-right font-medium">Apostando {brl(banca * perBet || 10)}</th>
               </tr>
             </thead>
@@ -142,7 +146,7 @@ export default function OportunidadesPage() {
                     </td>
                     <td className="px-2 font-semibold">“{name}”</td>
                     <td className="num px-2 text-right">{Math.round(x.price * 100)}¢</td>
-                    <td className="num px-2 text-right text-muted">{x.days < 2 ? `${Math.round(x.days * 24)} h` : `${x.days.toFixed(1)} dias`}</td>
+                    <td className="num px-2 text-right text-muted">{x.days < 1 / 24 ? `${Math.round(x.days * 1440)} min` : x.days < 2 ? `${Math.round(x.days * 24)} h` : `${x.days.toFixed(1)} dias`}{x.m.gameStart ? " (jogo)" : ""}</td>
                     <td className="num px-2 text-right">
                       <span className="text-up">{brl(stake / x.price)}</span> <span className="text-xs text-muted">se acertar</span>
                     </td>

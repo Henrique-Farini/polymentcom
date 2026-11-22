@@ -91,8 +91,24 @@ export function topicOf(m: Pick<PolyMarket, "eventSlug" | "question">) {
     .replace(/[0-9$,.%]+/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  return [m.eventSlug || q, q];
+  // Preço de um mesmo ativo (chegar a X, ficar acima de Y, cair para Z): tudo depende do mesmo movimento.
+  const asset = m.question.toLowerCase().match(/\b(bitcoin|btc|ethereum|eth|solana|xrp|dogecoin|s&p 500|nasdaq|gold|ouro|oil|petróleo)\b/)?.[1];
+  const priceQ = /\b(price|reach|dip|above|below|hit|close)\b/i.test(m.question);
+  const alias: Record<string, string> = { btc: "bitcoin", eth: "ethereum" };
+  return [m.eventSlug || q, q, ...(asset && priceQ ? [`preco:${alias[asset] ?? asset}`] : [])];
 }
+
+/** Com quanto tempo antes do evento apostar. `h` = prazo do teste mais parecido (horas antes do fim). */
+export const LEADS = [
+  { key: "semana", label: "3 a 9 dias antes (melhor no teste)", minDays: 3, maxDays: 9, h: 168 },
+  { key: "dias", label: "1 a 3 dias antes", minDays: 1, maxDays: 3, h: 72 },
+  { key: "dia", label: "6 horas a 1 dia antes", minDays: 6 / 24, maxDays: 1, h: 24 },
+  { key: "horas", label: "30 min a 6 horas antes", minDays: 0.5 / 24, maxDays: 6 / 24, h: 6 },
+  { key: "minutos", label: "5 min a 1 hora antes", minDays: 5 / 1440, maxDays: 1 / 24, h: 6 },
+  { key: "qualquer", label: "qualquer momento antes de começar (5 min a 9 dias)", minDays: 5 / 1440, maxDays: 9, h: 0 },
+] as const;
+export type LeadKey = (typeof LEADS)[number]["key"];
+export const leadOf = (k: string | undefined) => LEADS.find((l) => l.key === k) ?? LEADS[0];
 
 export function pickLongshots(
   markets: PolyMarket[],
@@ -103,9 +119,10 @@ export function pickLongshots(
   const out: LongshotPick[] = [];
   for (const m of markets) {
     if (!m.endDate || m.liquidity < settings.minLiquidity || m.settling) continue;
-    // Jogos: se já começou (ou começa logo), não é a aposta testada; seria apostar com o jogo rolando.
-    if (m.gameStart && (Date.parse(m.gameStart) - now) / 86_400_000 < opts.minDays) continue;
-    const days = (Date.parse(m.endDate) - now) / 86_400_000;
+    // Momento do evento: em jogos é o início da partida (o fim oficial do mercado costuma ser dias depois).
+    // Jogo já começado nunca entra: o preço muda a cada lance e os robôs veem o placar antes.
+    const eventAt = Date.parse(m.gameStart ?? m.endDate);
+    const days = (eventAt - now) / 86_400_000;
     if (!(days >= opts.minDays && days <= opts.maxDays)) continue;
     if (m.spread !== null && m.spread > 0.04) continue;
     const askYes = m.bestAsk ?? m.probability;

@@ -4,7 +4,7 @@ import path from "node:path";
 import { getBolsaAnalysis } from "@/lib/analise/bolsa";
 import { getAssets, getDividends, type Dividend } from "@/lib/bolsa/server";
 import { CORE_ETFS, MOMENTUM_UNIVERSE, displaySymbol } from "@/lib/bolsa/universe";
-import { pickLongshots, pickRegraNova, topicOf } from "@/lib/picks";
+import { leadOf, pickLongshots, pickRegraNova, topicOf } from "@/lib/picks";
 import { getMarketQuote, getMarkets } from "@/lib/polymarket/server";
 import { DEFAULT_POLY_SETTINGS } from "@/lib/score/types";
 import { allocateWholeShares, applyDividend, applyQuote, areaCash, areaSummary, brl, ensureWallets, closeManual, editCarteira, editPosition, emptyCarteira, placeOrder, recordEquity, type PositionEdit } from "./engine";
@@ -205,6 +205,8 @@ export interface AutoOptions {
   /** Stop só nas ações (null = sem stop; o backtest mostrou que stop piora). */
   stop: number | null;
   holdDays: number;
+  /** Polymarket: com quanto tempo antes do evento apostar (ver LEADS). */
+  antecedencia?: string;
 }
 
 const CORE_INFO: Record<string, string> = { "BOVA11.SA": "ETF Ibovespa", "IVVB11.SA": "ETF S&P 500 em reais" };
@@ -245,8 +247,8 @@ export async function montarAuto(o: AutoOptions) {
   const polyPicks =
     o.area === "polymarket"
       ? pickLongshots(markets, DEFAULT_POLY_SETTINGS, {
-          minDays: 2,
-          maxDays: 9,
+          minDays: leadOf(o.antecedencia).minDays,
+          maxDays: leadOf(o.antecedencia).maxDays,
           n: 15,
           // Não aposta de novo em assuntos onde já há aposta aberta (mesmo evento ou mesma pergunta com outra data).
           excludeTopics: new Set(
@@ -315,7 +317,7 @@ export async function montarAuto(o: AutoOptions) {
           ? `Bolsa (núcleo + momento + baixa volatilidade): ${alloc.length} ordens de ações inteiras somando ${brl(alloc.reduce((s, a) => s + a.amount, 0))}, prazo ${o.holdDays} dias${o.stop ? `, stop ${Math.round(o.stop * 100)}%` : ", sem stop"}.`
           : "",
         polyCash
-          ? `Polymarket (azarões): ${polyPicks.length} apostas de ${brl(stake)} (até 2% do patrimônio cada), somando ${brl(polyCash)}, seguradas até o resultado.`
+          ? `Polymarket (azarões, ${leadOf(o.antecedencia).label.replace(" (melhor no teste)", "")} do evento): ${polyPicks.length} apostas de ${brl(stake)} (até 2% do patrimônio cada), somando ${brl(polyCash)}, seguradas até o resultado.`
           : o.area === "polymarket"
             ? "Polymarket: nenhum azarão novo dentro da regra agora."
             : "",

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pickLongshots, topicOf } from "@/lib/picks";
+import { leadOf, pickLongshots, topicOf } from "@/lib/picks";
 import type { PolyMarket } from "@/lib/polymarket/types";
 import { DEFAULT_POLY_SETTINGS } from "@/lib/score/types";
 
@@ -52,5 +52,29 @@ describe("jogos e mercados decididos", () => {
 
   it("ignora mercado com resultado já proposto", () => {
     expect(pickLongshots([mk("a", 0.2, 5, { settling: true })], DEFAULT_POLY_SETTINGS, { minDays: 2, maxDays: 9, now: NOW })).toEqual([]);
+  });
+});
+
+describe("antecedência escolhida", () => {
+  it("aposta minutos antes do jogo começar, mas nunca depois", () => {
+    const em20min = mk("em20", 0.2, 7, { gameStart: new Date(NOW + 20 * 60_000).toISOString() });
+    const jaComecou = mk("ja", 0.2, 7, { gameStart: new Date(NOW - 60_000).toISOString() });
+    const em3h = mk("em3h", 0.2, 7, { gameStart: new Date(NOW + 3 * 3_600_000).toISOString() });
+    const minutos = leadOf("minutos");
+    const r = pickLongshots([em20min, jaComecou, em3h], DEFAULT_POLY_SETTINGS, { ...minutos, now: NOW });
+    expect(r.map((x) => x.m.id)).toEqual(["em20"]);
+    const horas = leadOf("horas");
+    expect(pickLongshots([em20min, jaComecou, em3h], DEFAULT_POLY_SETTINGS, { ...horas, now: NOW }).map((x) => x.m.id)).toEqual(["em3h"]);
+  });
+});
+
+describe("mesmo ativo", () => {
+  it("apostas sobre o preço do Bitcoin contam como um assunto só", () => {
+    const a = mk("a", 0.09, 1.5, { eventSlug: "btc-64k", question: "Will Bitcoin reach $64,000 November 16-22?", liquidity: 90_000 });
+    const b = mk("b", 0.94, 1.8, { eventSlug: "btc-56k", question: "Will the price of Bitcoin be above $56,000 on November 23?" });
+    const c = mk("c", 0.05, 1.3, { eventSlug: "eth", question: "Will Ethereum dip to $1,500 November 16-22?" });
+    const r = pickLongshots([a, b, c], DEFAULT_POLY_SETTINGS, { minDays: 0.01, maxDays: 9, now: NOW });
+    expect(r.map((x) => x.m.id).sort()).toEqual(["a", "c"]);
+    expect(topicOf(a)).toContain("preco:bitcoin");
   });
 });

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { LeadPicker } from "@/components/LeadPicker";
 import { Card, LiveBadge } from "@/components/ui";
 import { areaCash, areaSummary, positionPnl, positionValue, totalValue, type AreaSummary } from "@/lib/carteira/engine";
 import { estimateTax, TAX_LABEL } from "@/lib/carteira/ir";
@@ -309,6 +310,7 @@ function Investir({
     if (filter !== "todas") setArea(filter);
   }, [filter]);
   const [tab, setTab] = useState<"auto" | "manual">("auto");
+  const [antecedencia, setAntecedencia] = useStored<string>("radar:poly:antecedencia", "qualquer");
   const [stop, setStop] = useState(0);
   const [nAcoes, setNAcoes] = useState(4);
   const daysLeft = c.endsAt ? Math.max(1, Math.round((c.endsAt - Date.now()) / 86_400_000)) : 7;
@@ -352,11 +354,12 @@ function Investir({
       ) : poly ? (
         <div className="mt-3 space-y-3">
           <p className="text-sm text-muted">
-            <b className="text-text">Regra do azarão:</b> o lado que custa 5–30% em mercados que terminam em 2 a 9 dias, até 15 apostas, cada uma com no máximo 2% do patrimônio do
+            <b className="text-text">Regra do azarão:</b> o lado que custa 5–30%, até 15 apostas (uma por assunto), cada uma com no máximo 2% do patrimônio do
             Polymarket, seguradas até o resultado. Foi a regra que melhor se saiu no{" "}
             <Link href="/polymarket/oportunidades" className="text-info hover:underline">teste com ~1.100 mercados</Link>. Perde cerca de 3 em cada 4 apostas; o lucro vem das que acertam.
           </p>
-          <button type="button" disabled={busy} onClick={() => onAuto({ area, dias: 7, stop: 0, nAcoes: 4 })} className="rounded-lg bg-poly px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">
+          <LeadPicker value={antecedencia} onChange={setAntecedencia} />
+          <button type="button" disabled={busy} onClick={() => onAuto({ area, dias: 7, stop: 0, nAcoes: 4, antecedencia })} className="rounded-lg bg-poly px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">
             {busy ? "Montando…" : "Fazer as apostas"}
           </button>
         </div>
