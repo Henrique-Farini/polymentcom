@@ -78,3 +78,14 @@ describe("mesmo ativo", () => {
     expect(topicOf(a)).toContain("preco:bitcoin");
   });
 });
+
+describe("mesmo país ou conflito", () => {
+  it("premiê da Espanha e partido que ganha na Espanha contam como um assunto", () => {
+    const a = mk("a", 0.09, 5, { eventSlug: "pm-spain", question: "Will Pedro Sánchez be the next Prime Minister of Spain?", liquidity: 90_000 });
+    const b = mk("b", 0.28, 5, { eventSlug: "spain-election", question: "Will PSOE win the most seats in the 2026 Spanish general election?" });
+    const c = mk("c", 0.27, 1, { eventSlug: "us-iran", question: "US x Iran Effective Ceasefire by November 22?", liquidity: 80_000 });
+    const d = mk("d", 0.86, 5, { eventSlug: "il-iran", question: "Israel x Iran ceasefire continues through November 30?" });
+    const r = pickLongshots([a, b, c, d], DEFAULT_POLY_SETTINGS, { minDays: 0.01, maxDays: 9, now: NOW });
+    expect(r.map((x) => x.m.id).sort()).toEqual(["a", "c"]);
+  });
+});

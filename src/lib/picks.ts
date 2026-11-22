@@ -95,7 +95,20 @@ export function topicOf(m: Pick<PolyMarket, "eventSlug" | "question">) {
   const asset = m.question.toLowerCase().match(/\b(bitcoin|btc|ethereum|eth|solana|xrp|dogecoin|s&p 500|nasdaq|gold|ouro|oil|petróleo)\b/)?.[1];
   const priceQ = /\b(price|reach|dip|above|below|hit|close)\b/i.test(m.question);
   const alias: Record<string, string> = { btc: "bitcoin", eth: "ethereum" };
-  return [m.eventSlug || q, q, ...(asset && priceQ ? [`preco:${alias[asset] ?? asset}`] : [])];
+  // Política e conflitos do mesmo país andam juntos (premiê da Espanha × partido que ganha na Espanha;
+  // cessar-fogo Israel × Irã e EUA × Irã).
+  const COUNTRY: [RegExp, string][] = [
+    [/\b(spain|spanish|sánchez|sanchez|feijóo|feijoo|psoe)\b/, "espanha"],
+    [/\b(taiwan|taiwanese|kmt|dpp)\b/, "taiwan"],
+    [/\b(iran|iranian)\b/, "ira"],
+    [/\b(israel|gaza|hamas|hezbollah)\b/, "israel"],
+    [/\b(ukraine|russia|putin|zelensky)\b/, "ucrania"],
+    [/\b(venezuela|maduro)\b/, "venezuela"],
+    [/\b(brazil|brazilian|lula|bolsonaro)\b/, "brasil"],
+  ];
+  const lower = m.question.toLowerCase();
+  const countries = COUNTRY.filter(([re]) => re.test(lower)).map(([, k]) => `pais:${k}`);
+  return [m.eventSlug || q, q, ...(asset && priceQ ? [`preco:${alias[asset] ?? asset}`] : []), ...countries];
 }
 
 /** Com quanto tempo antes do evento apostar. `h` = prazo do teste mais parecido (horas antes do fim). */
