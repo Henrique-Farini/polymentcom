@@ -58,6 +58,8 @@ export interface CarteiraEvent {
 export interface EquityPoint {
   t: number;
   value: number;
+  /** Dinheiro colocado até aquele momento (para o gráfico não contar depósitos como lucro). */
+  base?: number;
 }
 
 export interface Carteira {

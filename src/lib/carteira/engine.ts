@@ -10,7 +10,7 @@ export function emptyCarteira(cash: number, now = Date.now(), days: number | nul
     endsAt: days ? now + days * DAY : null,
     positions: [],
     events: [{ t: now, kind: "info", text: `Carteira de teste criada com ${brl(cash)} fictícios.` }],
-    equity: [{ t: now, value: cash }],
+    equity: [{ t: now, value: cash, base: cash }],
     lastCheck: null,
     lastError: null,
   };
@@ -262,7 +262,7 @@ export function allocateWholeShares(targets: { key: string; price: number; weigh
 export function recordEquity(c: Carteira, now = Date.now(), everyMs = 10 * 60_000) {
   const v = totalValue(c);
   const last = c.equity[c.equity.length - 1];
-  if (!last || now - last.t >= everyMs) c.equity.push({ t: now, value: v });
+  if (!last || now - last.t >= everyMs || last.base !== c.startCash) c.equity.push({ t: now, value: v, base: c.startCash });
   else last.value = v;
   if (c.equity.length > 3000) c.equity.splice(0, c.equity.length - 3000);
 }

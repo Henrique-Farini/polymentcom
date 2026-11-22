@@ -18,7 +18,11 @@ import type { Carteira, Position, Quote } from "./types";
 const FILE = path.join(process.cwd(), "data", "carteira.json");
 const CHECK_EVERY = 60_000;
 
-const g = globalThis as unknown as { __carteiraLock?: Promise<unknown>; __carteiraTimer?: ReturnType<typeof setInterval> };
+const g = globalThis as unknown as {
+  __carteiraLock?: Promise<unknown>;
+  __carteiraTimer?: ReturnType<typeof setInterval>;
+  __carteiraCheck?: () => Promise<unknown>;
+};
 
 /** Uma alteração por vez no arquivo. */
 function withLock<T>(fn: () => Promise<T>): Promise<T> {
@@ -121,10 +125,21 @@ export async function getCarteira(maxAgeMs = 30_000) {
 }
 
 export function startLoop() {
+  // O cronômetro sobrevive quando o código é recarregado; ele chama sempre a versão mais nova de checkNow.
+  g.__carteiraCheck = checkNow;
   if (g.__carteiraTimer) return;
   g.__carteiraTimer = setInterval(() => {
-    checkNow().catch(() => undefined);
+    g.__carteiraCheck?.().catch(() => undefined);
   }, CHECK_EVERY);
+}
+
+// Ao carregar (ou recarregar) este arquivo, aponta o cronômetro para o código novo.
+g.__carteiraCheck = checkNow;
+// Cronômetros criados por versões antigas (antes desta correção) chamam o código velho: troca por um novo.
+if (g.__carteiraTimer) {
+  clearInterval(g.__carteiraTimer);
+  g.__carteiraTimer = undefined;
+  startLoop();
 }
 
 /* ----------------------------- ações ----------------------------- */

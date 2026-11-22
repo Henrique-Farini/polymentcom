@@ -112,8 +112,9 @@ export default function CarteiraPage() {
           <RaioX c={c} cdi={poll.data?.cdi ?? null} />
           <Card className="p-4">
             <h2 className="text-sm font-semibold">Patrimônio ao longo do teste</h2>
-            <p className="mb-2 text-xs text-muted">Linha tracejada = valor inicial. Passe o mouse para ver cada momento.</p>
-            <EquityChart points={c.equity} base={c.startCash} />
+            <p className="mb-2 text-xs text-muted">Linha tracejada = dinheiro colocado. Depósitos não contam como lucro. Passe o mouse para ver cada momento.</p>
+            {/* Desconta depósitos: cada ponto vira "quanto valeria hoje o dinheiro colocado até ali". */}
+            <EquityChart points={c.equity.map((p) => ({ t: p.t, value: (p.value / (p.base ?? c.startCash)) * c.startCash }))} base={c.startCash} />
           </Card>
 
           {c.cash >= 1 && <Investir c={c} busy={busy} onAuto={(o) => act({ acao: "auto", ...o })} onOrder={(o) => act({ acao: "ordem", ...o })} />}
