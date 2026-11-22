@@ -1,0 +1,31 @@
+/** Termos explicados em linguagem simples. Usados nas dicas (passar o mouse) e na Ajuda. */
+export const GLOSSARIO: Record<string, { termo: string; def: string }> = {
+  acao: { termo: "Ação", def: "Um pedacinho de uma empresa. Se a empresa vai bem e mais gente quer comprar, o preço sobe." },
+  indice: { termo: "Índice", def: "Uma média de várias ações. O Ibovespa resume as maiores empresas do Brasil; o S&P 500, as 500 maiores dos EUA." },
+  etf: { termo: "ETF", def: "Um fundo negociado na bolsa que compra várias ações de uma vez. Ex.: BOVA11 segue o Ibovespa." },
+  corretora: { termo: "Corretora", def: "A empresa onde você abre conta para comprar ações (XP, Clear, Rico, BTG, Inter…). O dinheiro fica lá." },
+  homebroker: { termo: "Home broker", def: "O site ou aplicativo da corretora onde você envia as ordens de compra e venda." },
+  volatilidade: { termo: "Volatilidade", def: "Quanto o preço sobe e desce. Alta volatilidade = mais risco: pode ganhar mais, mas também cair mais." },
+  stop: { termo: "Stop loss", def: "Uma regra de saída: “se cair X%, vendo”. Limita a perda, mas se o preço despencar de uma vez a venda sai abaixo do limite." },
+  score: { termo: "Score", def: "Nota de 0 a 100 que o app dá agora, somando tendência, força, volume e risco. Não é garantia: é um resumo dos sinais." },
+  tendencia: { termo: "Tendência", def: "Para onde o preço vem indo: alta, lateral (de lado) ou baixa, comparando com as médias dos últimos dias." },
+  media: { termo: "Média móvel", def: "A média do preço dos últimos N dias (MM9 = 9 dias). Preço acima da média costuma indicar alta." },
+  rsi: { termo: "RSI", def: "Mede se subiu ou caiu rápido demais (0 a 100). Acima de 70 = subiu muito rápido; abaixo de 30 = caiu muito rápido." },
+  retorno: { termo: "Retorno", def: "Quanto o dinheiro cresceu ou encolheu. +10% = R$ 1.000 viraram R$ 1.100." },
+  retornoAno: { termo: "Retorno ao ano", def: "O crescimento médio por ano no período, como se fosse constante." },
+  piorQueda: { termo: "Pior queda", def: "A maior queda do ponto mais alto ao mais baixo no período. Mostra o susto que quem investiu passou." },
+  beta: { termo: "Beta", def: "Quanto o ativo acompanha o índice. Beta 1 = anda igual; 2 = anda o dobro (sobe e cai mais)." },
+  correlacao: { termo: "Correlação", def: "Se dois ativos andam juntos (perto de 1) ou não (perto de 0). Misturar ativos pouco correlacionados reduz o risco." },
+  diversificar: { termo: "Diversificar", def: "Não colocar tudo num só lugar. Se um cai, os outros seguram." },
+  dividendo: { termo: "Dividendo", def: "Parte do lucro que a empresa paga aos acionistas. No dia seguinte ao corte, o preço da ação cai mais ou menos esse valor." },
+  backtest: { termo: "Backtest", def: "Testar uma regra no passado: “se eu tivesse feito isso nos últimos 5 anos, o que teria acontecido?”. O passado não garante o futuro." },
+  polymarket: { termo: "Polymarket", def: "Site de apostas em eventos (eleições, economia, esportes). Cada resposta tem um preço entre 0 e 1 dólar." },
+  probabilidade: { termo: "Preço = chance", def: "No Polymarket, um “Sim” a 62¢ significa que o mercado acha que há 62% de chance. Se acontecer, cada cota paga $1." },
+  liquidez: { termo: "Liquidez", def: "Quanto dinheiro está esperando para negociar. Pouca liquidez = difícil sair sem perder no preço." },
+  spread: { termo: "Spread", def: "A diferença entre o preço de quem compra e de quem vende. Quanto maior, mais você perde só para entrar e sair." },
+  livro: { termo: "Livro de ofertas", def: "A fila de pessoas querendo comprar e vender, com preço e quantidade." },
+  calibracao: { termo: "Calibração", def: "Se o preço acerta: das vezes em que algo custava 70%, aconteceu mais ou menos 70% das vezes?" },
+  cambio: { termo: "Câmbio", def: "Ativos dos EUA são em dólar. Se o dólar cair, você ganha menos em reais mesmo que a ação suba." },
+};
+
+export type TermoKey = keyof typeof GLOSSARIO;
